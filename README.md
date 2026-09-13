@@ -1,8 +1,8 @@
-# fetch-lyrics
+# lrckit
 
-Interactive CLI utility for Linux, macOS and Windows to search, inspect, romanize and embed synchronized (`.lrc`) and plain lyrics into FLAC, MP3, OGG Vorbis, Opus and M4A files.
+Vibecoded interactive CLI utility for Linux, macOS and Windows to search, inspect, romanize and embed synchronized (`.lrc`) and plain lyrics into FLAC, MP3, OGG Vorbis, Opus and M4A files with a focus on east asian music.
 
-Version 0.1.0 · Python 3.10+ · MIT
+Version 0.2.0 · Python 3.10+ · MIT
 
 ---
 
@@ -25,36 +25,36 @@ Version 0.1.0 · Python 3.10+ · MIT
 ### pipx (recommended)
 
 ```bash
-pipx install git+https://github.com/sobakah/fetch_lyrics.git
+pipx install git+https://github.com/sobakah/lrckit.git
 # with romanization and the extra provider engine:
-pipx install "fetch-lyrics[all] @ git+https://github.com/sobakah/fetch_lyrics.git"
+pipx install "lrckit[all] @ git+https://github.com/sobakah/lrckit.git"
 ```
 
-This installs a `fetch-lyrics` command on your `PATH`.
+This installs a `lrckit` command on your `PATH`.
 
-> **fish users:** `pipx` and `pip install --user` place their launchers in `~/.local/bin`. On Fedora that directory is added to `PATH` by `~/.bash_profile`, which fish never reads — so the install succeeds but `fetch-lyrics` is not found. Add it once with `fish_add_path ~/.local/bin` (fish 3.2+); it persists across sessions. In a virtual environment, use `source venv/bin/activate.fish` rather than `activate`, and set the editor with `set -gx EDITOR nvim` rather than `export`.
+> **fish users:** `pipx` and `pip install --user` place their launchers in `~/.local/bin`. On Fedora that directory is added to `PATH` by `~/.bash_profile`, which fish never reads — so the install succeeds but `lrckit` is not found. Add it once with `fish_add_path ~/.local/bin` (fish 3.2+); it persists across sessions. In a virtual environment, use `source venv/bin/activate.fish` rather than `activate`, and set the editor with `set -gx EDITOR nvim` rather than `export`.
 
 ### From a checkout
 
 ```bash
-git clone https://github.com/<username>/fetch-lyrics.git
-cd fetch-lyrics
+git clone https://github.com/sobakah/lrckit.git
+cd lrckit
 pip install -e ".[all]"
 ```
 
-The checkout also runs without installation. `fetch_lyrics.py` is only a launcher — it needs the sibling `fetchlyrics/` package directory next to it, and `config.json` one level above the package:
+The checkout also runs without installation. `lrckit.py` is only a launcher — it needs the sibling `lrckit/` package directory next to it, and `config.json` one level above the package. The launcher and the package share a name on purpose; Python resolves the import to the package directory, not to the launcher file:
 
 ```
-fetch_lyrics.py
+lrckit.py
 config.json
-fetchlyrics/
+lrckit/
     __init__.py  cli.py  app.py  providers.py
     tagging.py   text.py editor.py ui.py config.py
 ```
 
 ```bash
-chmod +x fetch_lyrics.py
-./fetch_lyrics.py ~/Music/Artist/Album
+chmod +x lrckit.py
+./lrckit.py ~/Music/Artist/Album
 ```
 
 ### Dependencies
@@ -87,10 +87,10 @@ pip install --user pykakasi pypinyin korean-romanizer anyascii syncedlyrics
 ## Usage
 
 ```bash
-fetch-lyrics                              # interactive, current directory
-fetch-lyrics ~/Music/Artist/Album         # interactive, specific album
-fetch-lyrics ~/Music/Artist --auto        # tag everything with a confident match
-fetch-lyrics ~/Music/Artist --auto --dry-run
+lrckit                              # interactive, current directory
+lrckit ~/Music/Artist/Album         # interactive, specific album
+lrckit ~/Music/Artist --auto        # tag everything with a confident match
+lrckit ~/Music/Artist --auto --dry-run
 ```
 
 | Option | Effect |
@@ -126,9 +126,9 @@ fetch-lyrics ~/Music/Artist --auto --dry-run
 | `t` | Back to the tree overview |
 | `q` | Quit |
 
-An entry is marked `✓exact` when it came back from LRCLIB's `/get` endpoint, which is queried with title, artist, album and — when the file has one — duration, and returns the canonical record rather than a ranked guess. Note that a second `/get` runs without the duration, so `✓exact` on its own does not prove the length was checked; the duration column shows that separately.
+`✓exact` marks a record LRCLIB returned as a direct match rather than a search hit; the duration column shows separately whether the length was verified.
 
-The highlighted entry is marked with `▶` and named in full on the `Enter` line. A search highlights its top result when that result is an exact match; inspecting an entry and returning with `b` highlights that one instead, so it is always visible where you left off.
+The entry `Enter` would save is marked `▶` and named in full above the menu — the exact match after a search, or the one you last inspected.
 
 **Inspection** (candidate or manual entry)
 
@@ -191,7 +191,7 @@ A non-zero exit status (for example `:cq` in Vim) is treated as a normal user ac
 
 ## Configuration
 
-Lookup order: `--config FILE` → `config.json` next to the package → `$XDG_CONFIG_HOME/fetch-lyrics/config.json` (falling back to `~/.config/fetch-lyrics/config.json`).
+Lookup order: `--config FILE` → `config.json` next to the package → `$XDG_CONFIG_HOME/lrckit/config.json` (falling back to `~/.config/lrckit/config.json`).
 
 User values are merged **recursively** over the built-in defaults, so a file with only the keys you care about is valid:
 
@@ -259,8 +259,8 @@ Embedded tags are recognized by Navidrome, Jellyfin, Symfonium, Feishin and foob
 ## Development
 
 ```
-fetch_lyrics.py          Launcher for checkouts
-fetchlyrics/
+lrckit.py                Launcher for checkouts
+lrckit/
   cli.py                 Argument parsing and start-up
   app.py                 Directory scanning, navigation, menus, batch mode
   providers.py           LRCLIB / NetEase / syncedlyrics, ranking

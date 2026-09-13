@@ -3,6 +3,63 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.2.0] — 2026-09-13
+
+The project is now called **lrckit**. Everything the old name touched moved with
+it, so this release needs a few manual steps — see *Upgrading* below.
+
+### Fixed
+
+* **The `exact` flag was assigned at random when a record came back from both
+  LRCLIB endpoints.** `/get` and `/search` frequently return the same track,
+  and since the queries run concurrently the first response to arrive decided
+  the flag. Exactness is now merged across all responses for a record, so the
+  same search no longer produces a different marking from run to run.
+
+### Added
+
+* **Session-wide search cache.** Results are kept per query, so stepping away
+  from a track and coming back reuses them instead of querying the providers
+  again; the highlighted entry is restored along with them. `R` forces a fresh
+  search, and a successful save drops the entry. Capped by
+  `settings.search_cache_entries` (default 64, least recently used evicted).
+* **Confirm the highlighted entry with Enter.** When a search returns a match
+  from LRCLIB's exact endpoint, that entry is highlighted on arrival and
+  `Enter` saves it without further keystrokes. The `Enter` line is only shown
+  when an entry is actually highlighted.
+
+### Changed
+
+* **Renamed from `fetch-lyrics` to `lrckit`.** The command, the Python package,
+  the launcher, the PyPI project name, the User-Agent sent to LRCLIB and the
+  configuration directory all follow the new name.
+* **The selected entry is visible.** The highlighted row is marked with `▶`
+  and its number and title are emphasised; the `Enter` line names it in full
+  with artist, title, provider and properties, so the selection is readable
+  without colour.
+* **Returning from an inspected entry keeps it highlighted.** Looking at an
+  entry and going back with `b` moves the highlight to that entry, so it is
+  clear where you left off and `Enter` confirms it.
+* **Menus are grouped into labelled columns.** Every menu is rendered by one
+  layout function that arranges options in aligned columns under headings such
+  as *Edit*, *File* and *Navigate*. Column count and width follow the terminal,
+  so the list reflows instead of overflowing on a narrow window, and key
+  colours now follow meaning — green for actions, yellow for navigation, red
+  for quitting and deleting.
+* The action `Enter` would take is printed on its own line above the menu.
+* Batch mode names the entry it applied or would apply, instead of reporting
+  only the provider.
+
+### Upgrading from 0.1.x
+
+* Reinstall under the new name: `pipx uninstall fetch-lyrics && pipx install
+  git+https://github.com/sobakah/lrckit.git`, or `pip install -e ".[all]"`
+  in a fresh checkout.
+* Move your configuration: `mv ~/.config/fetch-lyrics ~/.config/lrckit`.
+* The command is now `lrckit`; in a checkout the launcher is `./lrckit.py`.
+* Nothing changes in your audio files. Tags written by earlier versions are
+  read and written identically.
+
 ## [0.1.0] — 2026-09-13
 
 Romanization of songs that mix several writing systems. Every fix below was
@@ -109,4 +166,5 @@ LRCLIB, NetEase and `syncedlyrics`; confidence-aware ranking; batch mode with
   time. Traditional Chinese resolves less often than simplified for this
   reason.
 
+[0.2.0]: https://github.com/sobakah/lyrembed/releases/tag/0.2.0
 [0.1.0]: https://github.com/sobakah/lyrembed/releases/tag/0.1.0

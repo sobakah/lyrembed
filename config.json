@@ -73,7 +73,7 @@
     "netease_lyric_url": "https://music.163.com/api/song/lyric",
     "timeout_seconds": 6,
     "netease_search_limit": 6,
-    "user_agent": "fetch-lyrics/0.1.0 (https://github.com/<username>/fetch-lyrics)",
+    "user_agent": "lrckit/0.2.0 (https://github.com/<username>/lrckit)",
     "max_workers": 8,
     "retry_total": 2,
     "retry_backoff": 0.3,

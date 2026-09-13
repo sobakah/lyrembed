@@ -14,12 +14,12 @@ from .tagging import MetadataCache
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="fetch-lyrics",
+        prog="lrckit",
         description="Search, inspect, romanize and embed synchronized and plain lyrics "
                     "in FLAC, MP3, OGG Vorbis, Opus and M4A files.",
     )
     parser.add_argument("path", nargs="?", default=".", help="music directory (default: current directory)")
-    parser.add_argument("--version", action="version", version=f"fetch-lyrics {__version__}")
+    parser.add_argument("--version", action="version", version=f"lrckit {__version__}")
     parser.add_argument("-c", "--config", type=Path, metavar="FILE", help="use this config file instead of the search paths")
 
     batch = parser.add_argument_group("batch mode")

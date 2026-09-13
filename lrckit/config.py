@@ -8,8 +8,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-__version__ = "0.1.0"
-PROJECT_URL = "https://github.com/<username>/fetch-lyrics"
+__version__ = "0.2.0"
+PROJECT_URL = "https://github.com/<username>/lrckit"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "aliases": [
@@ -39,7 +39,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "netease_lyric_url": "https://music.163.com/api/song/lyric",
         "timeout_seconds": 6,
         "netease_search_limit": 6,
-        "user_agent": f"fetch-lyrics/{__version__} ({PROJECT_URL})",
+        "user_agent": f"lrckit/{__version__} ({PROJECT_URL})",
         "max_workers": 8,
         "retry_total": 2,
         "retry_backoff": 0.3,
@@ -90,7 +90,7 @@ def config_search_paths() -> list[Path]:
     config_home = Path(xdg) if xdg else Path.home() / ".config"
     return [
         Path(__file__).resolve().parent.parent / "config.json",
-        config_home / "fetch-lyrics" / "config.json",
+        config_home / "lrckit" / "config.json",
     ]
 
 

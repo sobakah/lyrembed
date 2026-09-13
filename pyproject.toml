@@ -3,8 +3,8 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "fetch-lyrics"
-version = "0.1.0"
+name = "lrckit"
+version = "0.2.0"
 description = "Interactive CLI to search, romanize and embed synchronized lyrics into audio files"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -33,10 +33,10 @@ all = [
 dev = ["pytest>=7", "pyflakes>=3"]
 
 [project.scripts]
-fetch-lyrics = "fetchlyrics.cli:main"
+lrckit = "lrckit.cli:main"
 
 [tool.setuptools]
-packages = ["fetchlyrics"]
+packages = ["lrckit"]
 
 [tool.setuptools.package-data]
-fetchlyrics = []
+lrckit = []
