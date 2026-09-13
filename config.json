@@ -1,0 +1,106 @@
+{
+  "aliases": [
+    [
+      "tomorrow x together",
+      "txt",
+      "투모로우바이투게더"
+    ],
+    [
+      "bts",
+      "bangtan",
+      "방탄소년단"
+    ],
+    [
+      "iu",
+      "이지은"
+    ],
+    [
+      "snsd",
+      "girls' generation",
+      "소녀시대"
+    ],
+    [
+      "g-idle",
+      "(g)i-dle",
+      "(여자)아이들",
+      "gidle"
+    ],
+    [
+      "seventeen",
+      "svt",
+      "세븐틴"
+    ],
+    [
+      "stray kids",
+      "skz",
+      "스트레이 키즈"
+    ],
+    [
+      "le sserafim",
+      "르세라핌"
+    ],
+    [
+      "newjeans",
+      "뉴진스"
+    ],
+    [
+      "blackpink",
+      "블랙핑크"
+    ],
+    [
+      "twice",
+      "트와이스"
+    ]
+  ],
+  "cleaning": {
+    "feature_regex": "[\\(\\[][\\s]*(?:feat\\.?|featuring|ft\\.?)\\s+[^\\)\\]]+[\\)\\]]",
+    "trailing_feature_regex": "\\s+(?:feat\\.?|featuring|ft\\.?)\\s+.*$",
+    "korean_bracket_regex": "[\\(\\[][^\\)\\]]*[가-힣ㄱ-ㅎㅏ-ㅣ][^\\)\\]]*[\\)\\]]",
+    "japanese_bracket_regex": "[\\(\\[][^\\)\\]]*[ぁ-ゖァ-ヺ一-龥][^\\)\\]]*[\\)\\]]",
+    "chinese_bracket_regex": "[\\(\\[][^\\)\\]]*[一-龥][^\\)\\]]*[\\)\\]]",
+    "ignore_words_artist_match": [
+      "the",
+      "and",
+      "feat",
+      "ft",
+      "with",
+      "&"
+    ]
+  },
+  "api": {
+    "lrclib_url": "https://lrclib.net/api",
+    "netease_search_url": "https://music.163.com/api/search/get/web",
+    "netease_lyric_url": "https://music.163.com/api/song/lyric",
+    "timeout_seconds": 6,
+    "netease_search_limit": 6,
+    "user_agent": "fetch-lyrics/0.1.0 (https://github.com/<username>/fetch-lyrics)",
+    "max_workers": 8,
+    "retry_total": 2,
+    "retry_backoff": 0.3,
+    "duration_tolerance_seconds": 2,
+    "enable_lrclib": true,
+    "enable_netease": true,
+    "enable_syncedlyrics": true
+  },
+  "settings": {
+    "supported_extensions": [
+      ".flac",
+      ".mp3",
+      ".ogg",
+      ".opus",
+      ".m4a"
+    ],
+    "default_editor": "nano",
+    "preview_lines": 16,
+    "non_latin_ratio_threshold": 0.25,
+    "max_search_depth": 3,
+    "max_file_count": 250,
+    "search_cache_entries": 64,
+    "prefer_latin": true,
+    "sort_by_tags": false,
+    "write_sidecar_lrc": false,
+    "id3_v2_version": 4,
+    "uslt_language": "eng",
+    "color": "auto"
+  }
+}
