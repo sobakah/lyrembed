@@ -3,6 +3,49 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.0] — 2026-10-05
+
+### Fixed
+
+* **Korean and Chinese lyrics were labelled LATIN.** The script badge counted
+  letters, but one Hangul or Han character holds a whole syllable, so an
+  English chorus outweighed the Korean verses. LRC tags (`[ar:…]`, `[ti:…]`)
+  and NetEase credit lines, mostly Latin metadata, were counted as well. Lines
+  are counted now, without tags and credits. In a live check 25 of 80 search
+  results changed from LATIN to ORIG, all Korean songs with much English
+  (*Super Shy*: 7% non-Latin letters, 26% non-Latin lines); none changed the
+  other way. Ranking with `prefer_latin` uses the same check and improves
+  with it.
+* LRC tags no longer count towards the suggested romanization, so a Chinese
+  `[al:…]` tag does not make a Korean song look mixed.
+
+### Added
+
+* **`[MIXED]` badge** for lyrics that combine several Asian scripts (Korean
+  with Japanese, say), which need the *Mixed scripts* romanization. Asian
+  script with English stays `[ORIG]`.
+* **`cleaning.strip_all_brackets`** removes everything in `(…)` and `[…]`
+  from title, artist and album before searching, for tags such as
+  `Group ("Member A", "Member B")`. Off by default.
+* **`settings.prefer_album_artist`** searches with the album artist
+  (`albumartist`, ID3 `TPE2`, MP4 `aART`) instead of the track artist, for
+  tags that list every member or guest per track. Compilations (`Various
+  Artists`) and tracks without an album artist keep the track artist. Off by
+  default.
+
+### Changed
+
+* `settings.non_latin_ratio_threshold` is now a share of lyric lines, with a
+  default of `0.1` (was a share of letters, `0.25`).
+* The selected choice has yellow brackets: the highlighted search result, the
+  detected romanization, the default Han reading and layout, and the track the
+  overview starts with.
+
+### Upgrading from 0.3.x
+
+* If your config sets `non_latin_ratio_threshold`, check the value: it now
+  means lines, not letters. Removing it gives the new default.
+
 ## [0.3.0] — 2026-10-05
 
 A correctness and safety release, prompted by a full code review. Romanization
@@ -300,6 +343,7 @@ LRCLIB, NetEase and `syncedlyrics`; confidence-aware ranking; batch mode with
   time. Traditional Chinese resolves less often than simplified for this
   reason.
 
+[0.4.0]: https://github.com/sobakah/lyrembed/releases/tag/0.4.0
 [0.3.0]: https://github.com/sobakah/lyrembed/releases/tag/0.3.0
 [0.2.0]: https://github.com/sobakah/lyrembed/releases/tag/0.2.0
 [0.1.0]: https://github.com/sobakah/lyrembed/releases/tag/0.1.0

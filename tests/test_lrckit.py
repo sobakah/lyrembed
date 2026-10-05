@@ -83,6 +83,51 @@ def test_non_latin_detection():
     assert not text.is_non_latin("Café naïve résumé")
 
 
+def test_korean_lyrics_with_an_english_chorus_are_original(cfg):
+    # Counted per letter, one English line outweighed several Korean ones
+    # (13% non-Latin letters) and the lyrics were labelled LATIN.
+    lyrics = (
+        "[00:01.00]I got that boom boom boom, baby let me show you\n"
+        "[00:05.00]너를 보면 내 맘이 떨려\n"
+        "[00:09.00]Oh yeah, I can't stop loving you tonight\n"
+        "[00:13.00]사랑해 영원히\n"
+        "[00:17.00]I got that boom boom boom, baby let me show you"
+    )
+    assert text.is_non_latin(lyrics)
+    assert text.script_label(lyrics) == "original"
+
+
+def test_lrc_tags_and_credits_do_not_count_as_lyrics(cfg):
+    korean = ("[ar:Some Artist Name]\n[ti:Some Long English Title Here]\n"
+              "[al:The Album Name Deluxe Edition]\n[by:lyricsuploader]\n"
+              "[00:01.00]너를 보면\n[00:05.00]사랑해")
+    assert text.is_non_latin(korean)
+    romanized = "[00:00.00]作词 : 김이나\n[00:01.00]neoreul bomyeon\n[00:05.00]saranghae"
+    assert text.script_label(romanized) == "latin"
+    # A Chinese album tag must not turn a Korean song into a mixed one.
+    assert text.script_label("[al:我的歌]\n[00:01.00]사랑해") == "original"
+
+
+def test_mixed_label_needs_two_asian_scripts(cfg):
+    assert text.script_label("[00:01.00]사랑해\n[00:02.00]ありがとう") == "mixed"
+    assert text.script_label("[00:01.00]사랑해\n[00:02.00]I love you") == "original"
+    candidate = providers.Candidate.build(provider="LRCLIB", artist="A", title="T", album="",
+                                          text="[00:01.00]사랑해\n[00:02.00]ありがとう")
+    assert candidate.mixed and not candidate.latin
+
+
+def test_candidate_list_shows_the_mixed_badge(cfg, capsys):
+    cfg["settings"]["color"] = "never"
+    ui.apply_color_settings()
+    found = [providers.Candidate.build(provider="LRCLIB", artist="A", title=t, album="", text=lyrics)
+             for t, lyrics in (("one", "사랑해 我爱你 ありがとう"), ("two", "사랑해"), ("three", "saranghae"))]
+    app.print_candidates(found)
+    lines = capsys.readouterr().out.splitlines()
+    assert "[MIXED]" in next(l for l in lines if "one" in l)
+    assert "[ORIG ]" in next(l for l in lines if "two" in l)
+    assert "[LATIN]" in next(l for l in lines if "three" in l)
+
+
 def test_detect_script():
     assert text.detect_script("사랑해") == "ko"
     assert text.detect_script("ありがとう 世界") == "ja"
@@ -396,6 +441,75 @@ def test_exact_flag_does_not_depend_on_response_order(monkeypatch):
         found = providers.query_lrclib("Song", "A", "", 200, report)
         assert len(found) == 1, order
         assert found[0].exact is True, order
+
+
+def test_prefer_album_artist_searches_with_the_album_artist(cfg, tmp_path, monkeypatch):
+    from mutagen.flac import FLAC
+
+    path = _make_flac(tmp_path / "song.flac")
+    audio = FLAC(path)
+    audio["title"], audio["artist"], audio["albumartist"] = "Song", "Member A, Member B", "Group"
+    audio.save()
+    meta = tagging.read_metadata(path)
+    assert meta.album_artist == "Group"
+
+    searched = []
+    monkeypatch.setattr(providers, "collect_candidates",
+                        lambda title, artist, *a, **k: searched.append(artist) or providers.SearchReport())
+    app.find_automatic(meta)
+    assert set(searched) == {"Member A, Member B"}          # off by default
+
+    searched.clear()
+    cfg["settings"]["prefer_album_artist"] = True
+    app.find_automatic(meta)
+    assert set(searched) == {"Group"}
+
+
+def test_prefer_album_artist_skips_compilations(cfg):
+    cfg["settings"]["prefer_album_artist"] = True
+    meta = tagging.TrackMeta(path=Path("x.flac"), title="Song", artist="Artist")
+    assert meta.search_artist == "Artist"                  # no album artist
+    meta.album_artist = "Various Artists"
+    assert meta.search_artist == "Artist"
+    meta.album_artist, meta.artist = "Group", ""
+    assert meta.search_artist == "Group" and meta.is_taggable
+
+
+def test_strip_all_brackets_removes_member_lists_from_queries(cfg, monkeypatch):
+    # Tags such as 'Group ("Member A", "Member B")' sent the member list to
+    # LRCLIB, which lists only the group, so nothing was found.
+    sent = []
+
+    class FakeResponse:
+        status_code = 404
+        reason = "Not Found"
+
+        def json(self):
+            return {}
+
+    class FakeSession:
+        def get(self, url, params=None, timeout=None, headers=None):
+            sent.append(params or {})
+            return FakeResponse()
+
+    monkeypatch.setattr(providers, "get_session", lambda: FakeSession())
+    artist = 'Group ("Member A", "Member B")'
+
+    providers.query_lrclib("Song [Live]", artist, "", 0, providers.SearchReport())
+    assert any(p.get("artist_name") == artist for p in sent)        # off by default
+
+    sent.clear()
+    cfg["cleaning"]["strip_all_brackets"] = True
+    providers.query_lrclib("Song [Live]", artist, "", 0, providers.SearchReport())
+    assert sent and all("(" not in str(p) and "[" not in str(p) for p in sent)
+    assert {"track_name": "Song", "artist_name": "Group"} in sent
+
+
+def test_strip_all_brackets_handles_nesting_and_keeps_bracket_only_tags(cfg):
+    cfg["cleaning"]["strip_all_brackets"] = True
+    assert text.clean_tag("Song (Version (Live) [2020]) Edit") == "Song Edit"
+    assert text.clean_tag("Song (unclosed") == "Song (unclosed"
+    assert providers._cleaned("[Intro]") == "[Intro]"   # never an empty query
 
 
 def test_lrclib_queries_are_deduplicated():
@@ -1019,6 +1133,54 @@ def test_romanization_can_keep_the_original_line():
     assert lines[2:] == ["[00:02.00]hello"]           # unchanged lines are not doubled
 
 
+@pytest.fixture
+def colors(cfg):
+    cfg["settings"]["color"] = "always"
+    ui.apply_color_settings()
+    yield ui.StyleUI
+    cfg["settings"]["color"] = "never"
+    ui.apply_color_settings()
+
+
+def _yellow_brackets(out: str) -> list[str]:
+    """The keys shown with yellow brackets, i.e. the selected choices."""
+    yellow = re.escape(ui.StyleUI.YELLOW + ui.StyleUI.BOLD + "[" + ui.StyleUI.RESET)
+    return [m.strip() for m in re.findall(yellow + r"(?:\x1b\[[0-9;]*m)*([^\x1b\]]+)", out)]
+
+
+def test_selected_candidate_has_yellow_brackets(colors, capsys):
+    found = [providers.Candidate.build(provider="LRCLIB", artist="A", title=t, album="", text="la")
+             for t in ("one", "two", "three")]
+    app.print_candidates(found, highlight=2)
+    assert _yellow_brackets(capsys.readouterr().out) == ["2"]
+    app.print_candidates(found)
+    assert _yellow_brackets(capsys.readouterr().out) == []
+
+
+def test_preselected_choices_have_yellow_brackets(cfg, colors, monkeypatch, capsys):
+    _scripted_input(monkeypatch, ["c", "c", "c"])
+    app.prompt_layout()
+    assert _yellow_brackets(capsys.readouterr().out) == ["1"]
+    cfg["settings"]["romanization_layout"] = "below"
+    app.prompt_layout()
+    assert _yellow_brackets(capsys.readouterr().out) == ["2"]
+    app.prompt_han_default()
+    assert _yellow_brackets(capsys.readouterr().out) == ["1"]
+
+
+def test_tree_marks_the_track_enter_starts_with(colors, tmp_path, capsys):
+    files = [_make_flac(tmp_path / f"{n}.flac") for n in ("a", "b")]
+    app.display_tree(files, tmp_path, tagging.MetadataCache())
+    assert _yellow_brackets(capsys.readouterr().out) == ["1"]
+
+
+def test_detected_romanization_has_yellow_brackets(colors, monkeypatch, capsys):
+    _scripted_input(monkeypatch, ["c"])
+    app.prompt_romanization("[00:01.00]사랑해")
+    expected = str(list(text.ROMANIZERS).index("ko") + 1)
+    assert _yellow_brackets(capsys.readouterr().out) == [expected]
+
+
 def test_layout_setting_decides_what_enter_picks(cfg, monkeypatch):
     _scripted_input(monkeypatch, ["", "1"])
     assert app.prompt_layout() is False               # default: replace
@@ -1040,8 +1202,8 @@ def test_rare_chinese_variants_are_not_taken_for_japanese():
     # 裏 is a Traditional Chinese variant missing from plain Big5 (CP950 has
     # it); Hong Kong forms such as 峯 are in no Chinese standard at all.
     assert text._charset_evidence("裏") is None
-    assert text.detect_script("[al:七裏香]\n[00:01.00]我爱你") == "zh"
-    assert text.detect_script("[al:峯]\n[00:01.00]我爱你") == "zh"
+    assert text.detect_script("[00:01.00]七裏香\n[00:02.00]我爱你") == "zh"
+    assert text.detect_script("[00:01.00]峯\n[00:02.00]我爱你") == "zh"
 
 
 @pytest.mark.skipif(not (text.HAS_KAKASI and text.HAS_PYPINYIN),

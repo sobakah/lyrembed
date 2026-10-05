@@ -28,7 +28,7 @@ from .text import (
     get_artist_aliases,
     has_timestamps,
     is_credit_line,
-    is_non_latin,
+    script_label,
     matches_artist,
 )
 
@@ -89,6 +89,8 @@ class Candidate:
     text: str
     synced: bool = False
     latin: bool = True
+    # Several Asian scripts share the lyrics (Korean with Japanese, say).
+    mixed: bool = False
     duration: int = 0
     diff: int = 0
     has_duration: bool = False
@@ -108,6 +110,7 @@ class Candidate:
     def build(cls, *, provider, artist, title, album, text, duration=0, track_duration=0,
               exact=False, unverified=False):
         text = text.strip()
+        script = script_label(text)
         has_duration = bool(duration)
         diff = abs(duration - track_duration) if (duration and track_duration) else 0
         return cls(
@@ -117,7 +120,8 @@ class Candidate:
             album=album or "N/A",
             text=text,
             synced=has_timestamps(text),
-            latin=not is_non_latin(text),
+            latin=script == "latin",
+            mixed=script == "mixed",
             duration=duration,
             diff=diff,
             has_duration=has_duration,

@@ -18,6 +18,7 @@ from .tagging import MetadataCache, TaggingError, TrackMeta
 from .ui import (
     StyleUI,
     badge,
+    choice_key,
     confirm,
     print_menu,
     print_primary_action,
@@ -234,10 +235,24 @@ def backup_lyrics(backup_root: Path, base_dir: Path, path: Path, lyrics: str) ->
 
 
 # --- rendering helpers -------------------------------------------------------
+_SCRIPT_BADGES = {
+    "latin": ("LATIN", "CYAN"),
+    "original": ("ORIG", "MAGENTA"),
+    "mixed": ("MIXED", "YELLOW"),
+}
+
+
+def script_badge(label: str, align: bool = False) -> str:
+    """LATIN, ORIG or MIXED; MIXED warns that the lyrics need the Mixed
+    scripts romanization, because one backend would get some lines wrong.
+    *align* pads to a common width for the candidate list."""
+    name, color = _SCRIPT_BADGES[label]
+    return badge(name.ljust(5) if align else name, getattr(StyleUI, color))
+
+
 def status_badges(lyrics: str) -> str:
     mode = badge("SYNC", StyleUI.GREEN) if text.has_timestamps(lyrics) else badge("PLAIN", StyleUI.YELLOW)
-    script = badge("ORIGINAL", StyleUI.MAGENTA) if text.is_non_latin(lyrics) else badge("LATIN", StyleUI.CYAN)
-    return f"{mode} {script}"
+    return f"{mode} {script_badge(text.script_label(lyrics))}"
 
 
 def print_provider_errors(report: SearchReport) -> None:
@@ -268,7 +283,7 @@ def print_candidates(candidates: list[Candidate], highlight: int | None = None) 
     colors = {"LRCLIB": StyleUI.BLUE, "NetEase": StyleUI.MAGENTA, "MULTI": StyleUI.CYAN}
     for index, cand in enumerate(candidates, 1):
         sync = badge("SYNC", StyleUI.GREEN) if cand.synced else badge("PLAIN", StyleUI.YELLOW)
-        script = badge("LATIN", StyleUI.CYAN) if cand.latin else badge("ORIG ", StyleUI.MAGENTA)
+        script = script_badge("latin" if cand.latin else "mixed" if cand.mixed else "original", align=True)
         source = badge(cand.provider, colors.get(cand.provider, StyleUI.WHITE))
 
         duration = duration_label(cand)
@@ -277,15 +292,12 @@ def print_candidates(candidates: list[Candidate], highlight: int | None = None) 
 
         selected = index == highlight
         marker = f"{StyleUI.GREEN}{StyleUI.BOLD}▶{StyleUI.RESET}" if selected else " "
-        number = (
-            f"{StyleUI.GREEN}{StyleUI.BOLD}{index}{StyleUI.RESET}"
-            if selected else f"{StyleUI.GREEN}{index}{StyleUI.RESET}"
-        )
+        number = choice_key(str(index), StyleUI.GREEN, selected)
         artist = f"{cand.artist} - " if cand.artist else ""
         title = f"{StyleUI.BOLD}{artist}{cand.title}{StyleUI.RESET}" if selected else f"{artist}{cand.title}"
 
         print(
-            f"{marker} [{number}] {source} {sync} {script} "
+            f"{marker} {number} {source} {sync} {script} "
             f"{StyleUI.GRAY}{duration:<12}{StyleUI.RESET} {title} "
             f"{StyleUI.GRAY}({cand.album}){StyleUI.RESET}{exact}{unverified}"
         )
@@ -309,7 +321,9 @@ def prompt_han_default() -> str | None:
     print(f"\n{StyleUI.BOLD}Chinese and Japanese share Han characters.{StyleUI.RESET}")
     print(f"{StyleUI.GRAY}Runs next to Kana, or containing characters unique to one system,{StyleUI.RESET}")
     print(f"{StyleUI.GRAY}are detected automatically. Choose how to read the rest:{StyleUI.RESET}")
-    print(f"  [{StyleUI.GREEN}1{StyleUI.RESET}] Chinese → Pīnyīn   [{StyleUI.GREEN}2{StyleUI.RESET}] Japanese → Rōmaji   [{StyleUI.YELLOW}c{StyleUI.RESET}] Cancel")
+    print(f"  {choice_key('1', StyleUI.GREEN, True)} Chinese → Pīnyīn   "
+          f"{choice_key('2', StyleUI.GREEN)} Japanese → Rōmaji   "
+          f"{choice_key('c', StyleUI.YELLOW)} Cancel")
 
     answer = safe_input(f"{StyleUI.BOLD}Choice (Enter = 1): {StyleUI.RESET}").strip().lower()
     if answer in ("", "1"):
@@ -329,9 +343,9 @@ def prompt_layout() -> bool | None:
     """
     below_by_default = str(config.get("settings", "romanization_layout", "replace")).lower() == "below"
     print(f"\n{StyleUI.BOLD}Layout:{StyleUI.RESET}")
-    print(f"  [{StyleUI.GREEN}1{StyleUI.RESET}] Replace the original   "
-          f"[{StyleUI.GREEN}2{StyleUI.RESET}] Keep the original, romanized line below   "
-          f"[{StyleUI.YELLOW}c{StyleUI.RESET}] Cancel")
+    print(f"  {choice_key('1', StyleUI.GREEN, not below_by_default)} Replace the original   "
+          f"{choice_key('2', StyleUI.GREEN, below_by_default)} Keep the original, romanized line below   "
+          f"{choice_key('c', StyleUI.YELLOW)} Cancel")
     answer = safe_input(
         f"{StyleUI.BOLD}Choice (Enter = {2 if below_by_default else 1}): {StyleUI.RESET}"
     ).strip().lower()
@@ -356,8 +370,8 @@ def prompt_romanization(lyrics: str) -> str:
         else:
             state = "Available" if available() else f"Missing: pip install {package}"
         hint = f" {StyleUI.GREEN}(detected){StyleUI.RESET}" if key == suggestion else ""
-        print(f"  [{StyleUI.GREEN}{index}{StyleUI.RESET}] {label} [{state}]{hint}")
-    print(f"  [{StyleUI.YELLOW}c{StyleUI.RESET}] Cancel")
+        print(f"  {choice_key(str(index), StyleUI.GREEN, key == suggestion)} {label} [{state}]{hint}")
+    print(f"  {choice_key('c', StyleUI.YELLOW)} Cancel")
 
     default_index = keys.index(suggestion) + 1 if suggestion in keys else None
     prompt = f"{StyleUI.BOLD}Choose [1-{len(keys)}/c]"
@@ -570,8 +584,8 @@ def manage_existing_lyrics(meta: TrackMeta, cache: MetadataCache) -> Action:
 
 def select_lyrics(meta: TrackMeta, cache: providers.SearchCache) -> tuple[Action, str | None]:
     """Search menu. Returns (action, lyrics)."""
-    current_title, current_artist, current_album = meta.title, meta.artist, meta.album
-    last_query = f"{meta.artist} - {meta.title}" if meta.artist else meta.title
+    current_title, current_artist, current_album = meta.title, meta.search_artist, meta.album
+    last_query = f"{current_artist} - {meta.title}" if current_artist else meta.title
 
     entry: providers.CachedSearch | None = None
     need_search = True
@@ -691,7 +705,9 @@ def select_lyrics(meta: TrackMeta, cache: providers.SearchCache) -> tuple[Action
 
 
 # --- tree view ---------------------------------------------------------------
-def display_tree(files: list[Path], base_dir: Path, cache: MetadataCache) -> None:
+def display_tree(files: list[Path], base_dir: Path, cache: MetadataCache,
+                 selected: int | None = 1) -> None:
+    """*selected* is the 1-based track Enter starts with."""
     print_banner(f"Tracks Overview ({len(files)} files)")
 
     grouped: dict[str, list[tuple[int, TrackMeta]]] = defaultdict(list)
@@ -714,7 +730,7 @@ def display_tree(files: list[Path], base_dir: Path, cache: MetadataCache) -> Non
                 marker = badge("SYNC", StyleUI.GREEN) if text.has_timestamps(meta.lyrics) else badge("PLAIN", StyleUI.YELLOW)
             else:
                 marker = f"{StyleUI.GRAY}[NO LYRICS]{StyleUI.RESET}"
-            print(f"  [{StyleUI.GREEN}{index:3d}{StyleUI.RESET}] {marker} {meta.label}")
+            print(f"  {choice_key(f'{index:3d}', StyleUI.GREEN, index == selected)} {marker} {meta.label}")
 
 
 # --- batch mode --------------------------------------------------------------
@@ -725,11 +741,11 @@ def find_automatic(meta: TrackMeta) -> tuple[SearchReport, Candidate | None]:
     requests; the full fan-out across all providers only runs when it does
     not produce a confident match.
     """
-    report = providers.collect_candidates(meta.title, meta.artist, meta.album, meta.duration, quick=True)
+    report = providers.collect_candidates(meta.title, meta.search_artist, meta.album, meta.duration, quick=True)
     candidate = providers.pick_automatic(report, meta.duration)
     if candidate is not None:
         return report, candidate
-    report = providers.collect_candidates(meta.title, meta.artist, meta.album, meta.duration)
+    report = providers.collect_candidates(meta.title, meta.search_artist, meta.album, meta.duration)
     return report, providers.pick_automatic(report, meta.duration)
 
 
@@ -896,6 +912,8 @@ def run_interactive(files: list[Path], base_dir: Path, cache: MetadataCache) -> 
 
         length = f"{_format_length(meta.duration)} min" if meta.duration else "N/A"
         print(f"{StyleUI.BOLD}Track:{StyleUI.RESET}  {meta.artist} - {meta.title}")
+        if meta.search_artist != meta.artist:
+            print(f"{StyleUI.BOLD}Search:{StyleUI.RESET} {StyleUI.GRAY}as album artist{StyleUI.RESET} {meta.search_artist}")
         print(f"{StyleUI.BOLD}Album:{StyleUI.RESET}  {meta.album or 'N/A'} | {length}")
 
         if meta.lyrics:
@@ -911,7 +929,7 @@ def run_interactive(files: list[Path], base_dir: Path, cache: MetadataCache) -> 
                 continue
             cache.invalidate(path)
             search_cache.discard(providers.SearchCache.key(
-                meta.title, meta.artist, meta.album, meta.duration
+                meta.title, meta.search_artist, meta.album, meta.duration
             ))
             success("✓ Lyrics successfully embedded into file.")
             move(Action.NEXT)

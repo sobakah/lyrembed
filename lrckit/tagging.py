@@ -19,6 +19,12 @@ from . import config
 log = logging.getLogger(__name__)
 
 VORBIS_LYRIC_KEYS = ("LYRICS", "UNSYNCEDLYRICS", "SYNCEDLYRICS")
+# Vorbis comments have no fixed album artist field; these are the spellings
+# taggers actually write (MusicBrainz Picard, foobar2000, Mp3tag).
+VORBIS_ALBUM_ARTIST_KEYS = ("albumartist", "album artist", "album_artist")
+
+# Album artist values that name no artist: searching for them finds nothing.
+_COMPILATION_ARTISTS = {"various artists", "various", "va", "v.a.", "v/a", "verschiedene interpreten"}
 MP4_LYRIC_KEY = "\xa9lyr"
 
 # The containers this module can read and write. settings.supported_extensions
@@ -48,6 +54,7 @@ class TrackMeta:
     title: str = ""
     artist: str = ""
     album: str = ""
+    album_artist: str = ""
     duration: int = 0
     lyrics: str = ""
     track_number: int = 0
@@ -61,8 +68,23 @@ class TrackMeta:
         return self.title or self.path.name
 
     @property
+    def search_artist(self) -> str:
+        """The artist to search for.
+
+        With settings.prefer_album_artist the album artist wins: per-track
+        artist tags often list every member or guest ('Group (Member A,
+        Member B)'), while providers file the song under the group. A
+        compilation's 'Various Artists' is no artist, so the track's own
+        artist is used there.
+        """
+        if (config.get("settings", "prefer_album_artist", False) and self.album_artist
+                and self.album_artist.lower() not in _COMPILATION_ARTISTS):
+            return self.album_artist
+        return self.artist
+
+    @property
     def is_taggable(self) -> bool:
-        return bool(self.title and self.artist)
+        return bool(self.title and self.search_artist)
 
 
 # --- helpers -----------------------------------------------------------------
@@ -150,6 +172,11 @@ def read_metadata(path: Path) -> TrackMeta:
             meta.title = _first(audio.get("title"))
             meta.artist = _first(audio.get("artist"))
             meta.album = _first(audio.get("album"))
+            for key in VORBIS_ALBUM_ARTIST_KEYS:
+                value = _first(audio.get(key))
+                if value.strip():
+                    meta.album_artist = value
+                    break
             meta.track_number = _parse_number(audio.get("tracknumber"))
             meta.disc_number = _parse_number(audio.get("discnumber"))
             for key in VORBIS_LYRIC_KEYS:
@@ -163,6 +190,7 @@ def read_metadata(path: Path) -> TrackMeta:
             meta.title = _id3_text(tags, "TIT2")
             meta.artist = _id3_text(tags, "TPE1")
             meta.album = _id3_text(tags, "TALB")
+            meta.album_artist = _id3_text(tags, "TPE2")
             meta.track_number = _parse_number(_id3_text(tags, "TRCK"))
             meta.disc_number = _parse_number(_id3_text(tags, "TPOS"))
             if tags:
@@ -181,6 +209,7 @@ def read_metadata(path: Path) -> TrackMeta:
             meta.title = _first(audio.get("\xa9nam"))
             meta.artist = _first(audio.get("\xa9ART"))
             meta.album = _first(audio.get("\xa9alb"))
+            meta.album_artist = _first(audio.get("aART"))
             meta.track_number = _parse_number(audio.get("trkn"))
             meta.disc_number = _parse_number(audio.get("disk"))
             meta.lyrics = _first(audio.get(MP4_LYRIC_KEY))
@@ -198,6 +227,7 @@ def read_metadata(path: Path) -> TrackMeta:
     meta.title = meta.title.strip()
     meta.artist = meta.artist.strip()
     meta.album = meta.album.strip()
+    meta.album_artist = meta.album_artist.strip()
     meta.lyrics = meta.lyrics.strip()
     return meta
 

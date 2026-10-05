@@ -2,7 +2,7 @@
 
 Vibecoded interactive CLI utility for Linux, macOS and Windows to search, inspect, romanize and embed synchronized (`.lrc`) and plain lyrics into FLAC, MP3, OGG Vorbis, Opus and M4A files with a focus on east asian music.
 
-Version 0.3.0 · Python 3.10+ · MIT
+Version 0.4.0 · Python 3.10+ · MIT
 
 ---
 
@@ -168,7 +168,7 @@ Each line is split into runs of one script, and only non-Latin runs are converte
 
 Hangul and Kana are unambiguous. A Han run is read as Chinese when it contains a character that no Japanese character set standard includes, or one pykakasi has no reading for; as Japanese when Kana touches it or it contains a character only Japanese standards include (shinjitai such as `駅` or `気`). Which systems use a character is looked up in the GB2312, Big5 and JIS character sets that ship with Python, not in a hand-kept list. Anything still ambiguous follows the choice you make when starting the conversion.
 
-Pick **Mixed scripts** in the `r` menu; it is preselected when two different Asian scripts share the text. A line like `사랑해 我爱你 ありがとう` becomes `saranghae wǒ ài nǐ arigatou` in one pass. After choosing the script you choose the layout: replace each line, or keep it and add the romanized line below with the same timestamp. `settings.romanization_layout` sets which of the two Enter picks.
+Pick **Mixed scripts** in the `r` menu; it is preselected when two different Asian scripts share the text, and search results with such lyrics carry a `[MIXED]` badge instead of `[ORIG]`. A line like `사랑해 我爱你 ありがとう` becomes `saranghae wǒ ài nǐ arigatou` in one pass. After choosing the script you choose the layout: replace each line, or keep it and add the romanized line below with the same timestamp. `settings.romanization_layout` sets which of the two Enter picks.
 
 Romanization never drops characters: pykakasi silently deletes characters it cannot read (and sometimes the one after them), so those are converted with pypinyin — or anyascii — instead.
 
@@ -215,7 +215,7 @@ An invalid file found on the search paths produces a warning and the defaults ar
 
 **`aliases`** — groups of equivalent artist spellings, matched at word boundaries.
 
-**`cleaning`** — `feature_regex`, `trailing_feature_regex` and the `korean_`/`japanese_`/`chinese_bracket_regex` patterns removed from search queries, plus `ignore_words_artist_match`.
+**`cleaning`** — `feature_regex`, `trailing_feature_regex` and the `korean_`/`japanese_`/`chinese_bracket_regex` patterns removed from search queries, plus `ignore_words_artist_match`. Set `strip_all_brackets` to `true` to drop everything in `(…)` and `[…]` from title, artist and album before searching — useful when tags list individual members behind the group, as in `Group ("Member A", "Member B")`. It also drops parts such as `(Live)` or `[Remastered]`; a title or artist written entirely in brackets is searched as it is.
 
 **`api`**
 
@@ -239,7 +239,7 @@ An invalid file found on the search paths produces a warning and the defaults ar
 | `supported_extensions` | File types included in a scan; only `.flac`, `.mp3`, `.ogg`, `.opus` and `.m4a` can be tagged, others are ignored with a warning |
 | `default_editor` | Fallback when `$EDITOR` and `$VISUAL` are unset |
 | `preview_lines` | Lines shown in the short preview |
-| `non_latin_ratio_threshold` | Share of non-Latin letters above which lyrics count as original-script |
+| `non_latin_ratio_threshold` | Share of lyric lines (`0.1` = 10%) that must contain non-Latin letters for lyrics to count as original-script. Counted per line because one Hangul or Han character holds a whole syllable; LRC tags and credit lines are ignored |
 | `max_search_depth` | Directory levels to descend. `3` collects files up to three levels below the start directory; deeper directories are not entered. |
 | `max_file_count` | Abort the scan above this many files and ask for a narrower path; `0` for no limit |
 | `search_cache_entries` | How many past searches to keep in memory for the session |
@@ -248,6 +248,7 @@ An invalid file found on the search paths produces a warning and the defaults ar
 | `write_sidecar_lrc` | Also write a companion `.lrc` next to each track |
 | `id3_v2_version` | ID3v2 version for MP3s that have no tag yet: `4` (default) or `3` for players that only read ID3v2.3. Existing tags keep their version |
 | `uslt_language` | ISO-639-2 code stored in the MP3 `USLT` frame |
+| `prefer_album_artist` | `true` searches with the album artist instead of the track artist, for tags that list every member or guest per track. Compilations (`Various Artists`) and tracks without an album artist keep the track artist |
 | `romanization_layout` | What Enter picks at the romanization layout prompt: `replace` (default) or `below` to keep the original line with the romanized one below it |
 | `color` | `auto`, `always` or `never` |
 

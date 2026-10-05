@@ -94,6 +94,16 @@ def badge(text: str, color: str) -> str:
     return f"{color}{StyleUI.BOLD}[{text}]{StyleUI.RESET}"
 
 
+def choice_key(key: str, color: str, selected: bool = False) -> str:
+    """A choice such as ``[2]``. The selected one - the entry Enter would pick,
+    whether chosen or preselected - gets bold yellow brackets, so the current
+    choice stands out without reading the "Enter = ..." hint."""
+    if selected:
+        bracket = f"{StyleUI.YELLOW}{StyleUI.BOLD}"
+        return f"{bracket}[{StyleUI.RESET}{color}{StyleUI.BOLD}{key}{StyleUI.RESET}{bracket}]{StyleUI.RESET}"
+    return f"[{color}{key}{StyleUI.RESET}]"
+
+
 def print_banner(text: str) -> None:
     width = min(terminal_width(), 72)
     print(f"\n{StyleUI.CYAN}{StyleUI.BOLD}{'─' * width}{StyleUI.RESET}")

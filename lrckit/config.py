@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 PROJECT_URL = "https://github.com/sobakah/lrckit"
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -32,6 +32,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "japanese_bracket_regex": r"[\(\[][^\)\]]*[ぁ-ゖァ-ヺ一-龥][^\)\]]*[\)\]]",
         "chinese_bracket_regex": r"[\(\[][^\)\]]*[一-龥][^\)\]]*[\)\]]",
         "ignore_words_artist_match": ["the", "and", "feat", "ft", "with", "&"],
+        "strip_all_brackets": False,
     },
     "api": {
         "lrclib_url": "https://lrclib.net/api",
@@ -54,7 +55,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "supported_extensions": [".flac", ".mp3", ".ogg", ".opus", ".m4a"],
         "default_editor": "nano",
         "preview_lines": 16,
-        "non_latin_ratio_threshold": 0.25,
+        "non_latin_ratio_threshold": 0.1,
         "max_search_depth": 3,
         "max_file_count": 250,
         "search_cache_entries": 64,
@@ -64,6 +65,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "id3_v2_version": 4,
         "uslt_language": "eng",
         "romanization_layout": "replace",
+        "prefer_album_artist": False,
         "color": "auto",
     },
 }

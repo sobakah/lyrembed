@@ -26,7 +26,7 @@ tests/test_lrckit.py     pytest suite
 
 ```bash
 pip install -e ".[all,dev]"     # all optional backends plus pytest/pyflakes
-pytest -q                       # 102 tests; 16 skip without the optional backends
+pytest -q                       # 114 tests; 16 skip without the optional backends
 python -m pyflakes lrckit/ tests/ run.py
 python run.py --version
 python run.py ~/Music/Album --auto --dry-run --color never
@@ -71,6 +71,13 @@ conversion paths through it.
 **Non-letter characters are `KEEP`.** `text._char_class` tests `isalpha()`, not
 `isascii()`. Typographic punctuation (`…`, em dashes, curly quotes) must not
 count as a script, or purely Korean lyrics get reported as mixed.
+
+**Latin vs. original is counted per lyric line, not per letter.** One Hangul
+or Han character holds a whole syllable, so a letter count let an English
+chorus outweigh the Korean verses (*Super Shy* had 7% non-Latin letters but
+26% non-Latin lines). `text._lyric_lines` also drops LRC tags and credit
+lines, which are mostly Latin metadata. `[MIXED]` means two *Asian* scripts
+(`detect_script == "mixed"`), not Asian plus English.
 
 **`detect_script` skips provider credit lines.** NetEase prepends Chinese
 headers (`作词 : …`); they are metadata and would make every Korean song look

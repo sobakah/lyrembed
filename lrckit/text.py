@@ -55,6 +55,25 @@ def _compiled(pattern: str, ignore_case: bool):
     return re.compile(pattern, re.IGNORECASE if ignore_case else 0)
 
 
+# Innermost pair first, so nested brackets go in several passes.
+_ANY_BRACKET = re.compile(r"\([^()\[\]]*\)|\[[^()\[\]]*\]")
+
+
+def _strip_brackets(text: str) -> str:
+    """Remove every balanced (...) and [...] group, nested ones included.
+
+    Tags like 'Album Artist ("Member A", "Member B")' carry the individual
+    performers in brackets; providers list the main artist only, so the
+    bracketed part makes queries and artist matching fail. Unbalanced brackets
+    are left alone rather than guessing where they end.
+    """
+    while True:
+        stripped = _ANY_BRACKET.sub(" ", text)
+        if stripped == text:
+            return text
+        text = stripped
+
+
 def clean_tag(text: str) -> str:
     if not text:
         return ""
@@ -75,6 +94,9 @@ def clean_tag(text: str) -> str:
                 cleaned = _compiled(pattern, False).sub("", cleaned)
             except re.error:
                 pass
+
+    if config.get("cleaning", "strip_all_brackets", False):
+        cleaned = _strip_brackets(cleaned)
 
     return re.sub(r"\s+", " ", cleaned).strip()
 
@@ -168,20 +190,58 @@ def strip_timestamps(text: str) -> str:
     return "\n".join(lines)
 
 
+def _lyric_lines(text: str) -> list[str]:
+    """The sung lines: without timestamps, LRC headers, credits and blank lines.
+
+    Headers such as [ar:...] and [al:...] are usually long and in English, and
+    NetEase credits ('作词 : Name') carry Latin names; both are metadata and
+    must not decide which script the lyrics are in.
+    """
+    lines = []
+    for line in text.splitlines():
+        if _LRC_META_REGEX.match(line) or is_credit_line(line):
+            continue
+        body = strip_timestamps(line).strip()
+        if body:
+            lines.append(body)
+    return lines
+
+
+def _has_non_latin_letter(line: str) -> bool:
+    return any(c.isalpha() and not _is_latin_char(c) for c in line)
+
+
 @lru_cache(maxsize=256)
-def _non_latin_ratio(text: str) -> float:
-    letters = [c for c in strip_timestamps(text) if c.isalpha()]
-    if not letters:
+def _non_latin_line_share(text: str) -> float:
+    """Share of lyric lines containing any non-Latin letter.
+
+    Counted per line, not per letter: one Hangul or Han character holds a
+    whole syllable where English needs several letters, so a letter count let
+    a single English chorus outweigh the Korean verses. Romanized lyrics have
+    essentially no non-Latin letters at all, so even a small share of lines
+    means the original script is still there.
+    """
+    lines = _lyric_lines(text)
+    if not lines:
         return 0.0
-    non_latin = sum(1 for c in letters if not _is_latin_char(c))
-    return non_latin / len(letters)
+    return sum(1 for line in lines if _has_non_latin_letter(line)) / len(lines)
 
 
 def is_non_latin(text: str) -> bool:
     if not text:
         return False
-    threshold = float(config.get("settings", "non_latin_ratio_threshold", 0.25))
-    return _non_latin_ratio(text) > threshold
+    threshold = float(config.get("settings", "non_latin_ratio_threshold", 0.1))
+    share = _non_latin_line_share(text)
+    return share > 0 and share >= threshold
+
+
+def script_label(text: str) -> str:
+    """'latin', 'original', or 'mixed' when several Asian scripts need
+    romanizing - the case where only the Mixed scripts mode gets every line
+    right, which the user should know before picking a romanization."""
+    if not is_non_latin(text):
+        return "latin"
+    return "mixed" if detect_script(text) == "mixed" else "original"
 
 
 @lru_cache(maxsize=256)
@@ -668,14 +728,15 @@ def detect_script(text: str) -> str | None:
     Latin needs no mixed mode - the Latin part is left alone anyway. Han runs
     are classified with the same evidence the converter uses, so Chinese next
     to Japanese is recognised instead of being absorbed into it. Provider
-    credit headers are ignored, because they are metadata rather than lyrics.
+    credit headers and LRC tags ([ti:...]) are ignored, because they are
+    metadata rather than lyrics.
     """
     asian: set[str] = set()
     has_other = False
     trust_ja = contains_kana(text)
 
     for line in text.splitlines():
-        if is_credit_line(line):
+        if is_credit_line(line) or _LRC_META_REGEX.match(line):
             continue
         runs = segment_line(strip_timestamps(line))
         line_has_kana = any(kind == KANA for kind, _ in runs)
