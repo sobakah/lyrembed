@@ -6,3 +6,10 @@ build/
 dist/
 *.egg-info/
 .pytest_cache/
+
+# Personal config in a checkout; the template is config.example.json
+/config.json
+
+# Personal notes kept outside the repo (~/Software/Claude/Projects/lrckit)
+/COMMIT_MSG*.txt
+/RELEASE_NOTES*.md

@@ -21,9 +21,25 @@ log = logging.getLogger(__name__)
 VORBIS_LYRIC_KEYS = ("LYRICS", "UNSYNCEDLYRICS", "SYNCEDLYRICS")
 MP4_LYRIC_KEY = "\xa9lyr"
 
+# The containers this module can read and write. settings.supported_extensions
+# may narrow the scan but cannot add formats.
+SUPPORTED_EXTENSIONS = (".flac", ".mp3", ".ogg", ".opus", ".m4a")
+
+# SYLT time stamp format 2 means milliseconds; format 1 (MPEG frames) cannot
+# be converted without decoding the stream.
+_SYLT_MILLISECONDS = 2
+
 
 class TaggingError(Exception):
     """Raised when a file cannot be read from or written to."""
+
+
+class SidecarError(TaggingError):
+    """The lyrics were embedded, but the companion .lrc file could not be written.
+
+    A subclass so that callers that only care about failure still catch it,
+    while callers that report results can tell a partial success apart.
+    """
 
 
 @dataclass
@@ -84,6 +100,30 @@ def _id3_text(tags, key: str) -> str:
     return ""
 
 
+def _sylt_to_lrc(frame) -> str:
+    """Convert an ID3 SYLT frame (synchronized lyrics) to LRC text."""
+    if getattr(frame, "format", None) != _SYLT_MILLISECONDS:
+        return ""
+    lines = []
+    for text, stamp in frame.text:
+        minutes, rest = divmod(int(stamp), 60_000)
+        lines.append(f"[{minutes:02d}:{rest // 1000:02d}.{rest % 1000 // 10:02d}]{text.strip()}")
+    return "\n".join(lines)
+
+
+def _id3_save_version(tags) -> int:
+    """Keep the ID3v2 version a file already has.
+
+    Converting a v2.3 tag to v2.4 just to add lyrics changes how every other
+    frame is stored, and some players only read v2.3. The configured version
+    applies to files that had no ID3v2 tag.
+    """
+    existing = getattr(tags, "version", None) or ()
+    if len(existing) > 1 and existing[1] in (3, 4):
+        return existing[1]
+    return 3 if int(config.get("settings", "id3_v2_version", 4)) == 3 else 4
+
+
 def _parse_number(raw) -> int:
     """Parse '5', '5/12' or (5, 12) into an int."""
     if isinstance(raw, (list, tuple)) and raw:
@@ -130,6 +170,12 @@ def read_metadata(path: Path) -> TrackMeta:
                     if str(frame.text).strip():
                         meta.lyrics = str(frame.text)
                         break
+                else:
+                    for frame in tags.getall("SYLT"):
+                        converted = _sylt_to_lrc(frame)
+                        if converted.strip():
+                            meta.lyrics = converted
+                            break
 
         elif ext == ".m4a":
             meta.title = _first(audio.get("\xa9nam"))
@@ -142,6 +188,9 @@ def read_metadata(path: Path) -> TrackMeta:
         info = getattr(audio, "info", None)
         meta.duration = int(info.length) if info and getattr(info, "length", None) else 0
 
+    except TaggingError as exc:
+        meta.error = str(exc)
+        log.warning("Could not read metadata from %s: %s", path, exc)
     except (MutagenError, OSError, ValueError) as exc:
         meta.error = f"{type(exc).__name__}: {exc}"
         log.warning("Could not read metadata from %s: %s", path, exc)
@@ -207,13 +256,17 @@ def embed_lyrics(path: Path, lyrics: str) -> None:
             audio.save()
 
         elif ext == ".mp3":
-            if audio.tags is None:
+            had_tags = audio.tags is not None
+            if not had_tags:
                 audio.add_tags()
+            version = _id3_save_version(audio.tags if had_tags else None)
+            # SYLT is replaced too: players prefer it over USLT, so a stale
+            # synchronized frame would hide the new lyrics.
             audio.tags.delall("USLT")
+            audio.tags.delall("SYLT")
             language = str(config.get("settings", "uslt_language", "eng"))[:3] or "eng"
             audio.tags.add(USLT(encoding=3, lang=language, desc="", text=lyrics))
-            version = int(config.get("settings", "id3_v2_version", 4))
-            audio.save(v2_version=3 if version == 3 else 4)
+            audio.save(v2_version=version)
 
         elif ext == ".m4a":
             audio[MP4_LYRIC_KEY] = [lyrics]
@@ -246,10 +299,12 @@ def delete_lyrics(path: Path) -> None:
                 audio.save()
 
         elif ext == ".mp3":
-            if audio.tags:
+            # Only rewrite the file when there is something to remove.
+            if audio.tags and (audio.tags.getall("USLT") or audio.tags.getall("SYLT")):
+                version = _id3_save_version(audio.tags)
                 audio.tags.delall("USLT")
-                version = int(config.get("settings", "id3_v2_version", 4))
-                audio.save(v2_version=3 if version == 3 else 4)
+                audio.tags.delall("SYLT")
+                audio.save(v2_version=version)
 
         elif ext == ".m4a":
             if MP4_LYRIC_KEY in audio:
@@ -265,18 +320,36 @@ def delete_lyrics(path: Path) -> None:
         raise TaggingError(f"Could not remove lyrics from '{path.name}': {exc}") from exc
 
 
+def sidecar_path(path: Path) -> Path:
+    return path.with_suffix(".lrc")
+
+
+def stale_sidecar(path: Path) -> Path | None:
+    """An existing .lrc next to *path* that this run will not keep up to date.
+
+    Navidrome and Jellyfin often prefer the sidecar over the embedded tag, so
+    such a file hides whatever is written into the track.
+    """
+    if config.get("settings", "write_sidecar_lrc", False):
+        return None
+    sidecar = sidecar_path(path)
+    return sidecar if sidecar.is_file() else None
+
+
 def write_sidecar(path: Path, lyrics: str) -> Path:
     """Write a companion .lrc file next to the track (Navidrome/Jellyfin read these)."""
-    sidecar = path.with_suffix(".lrc")
+    sidecar = sidecar_path(path)
     try:
         sidecar.write_text(lyrics, encoding="utf-8")
     except OSError as exc:
-        raise TaggingError(f"Could not write sidecar '{sidecar.name}': {exc}") from exc
+        raise SidecarError(
+            f"Lyrics embedded, but the sidecar '{sidecar.name}' could not be written: {exc}"
+        ) from exc
     return sidecar
 
 
 def delete_sidecar(path: Path) -> bool:
-    sidecar = path.with_suffix(".lrc")
+    sidecar = sidecar_path(path)
     try:
         if sidecar.is_file():
             sidecar.unlink()

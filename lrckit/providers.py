@@ -8,8 +8,10 @@ instead of the sum of up to thirty sequential requests.
 from __future__ import annotations
 
 import logging
+import threading
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 
 import requests
@@ -21,7 +23,14 @@ except ImportError:  # pragma: no cover
     from requests.packages.urllib3.util.retry import Retry  # type: ignore
 
 from . import config
-from .text import clean_tag, get_artist_aliases, has_timestamps, is_non_latin, matches_artist
+from .text import (
+    clean_tag,
+    get_artist_aliases,
+    has_timestamps,
+    is_credit_line,
+    is_non_latin,
+    matches_artist,
+)
 
 log = logging.getLogger(__name__)
 
@@ -85,9 +94,19 @@ class Candidate:
     has_duration: bool = False
     exact: bool = False
     match_artist: bool = True
+    track_duration: int = 0
+    # The provider returns lyrics without saying which recording they belong
+    # to (syncedlyrics), so neither artist nor title could be checked.
+    unverified: bool = False
+
+    @property
+    def duration_checked(self) -> bool:
+        """True only when both lengths are known, so ``diff`` means something."""
+        return self.has_duration and self.track_duration > 0
 
     @classmethod
-    def build(cls, *, provider, artist, title, album, text, duration=0, track_duration=0, exact=False):
+    def build(cls, *, provider, artist, title, album, text, duration=0, track_duration=0,
+              exact=False, unverified=False):
         text = text.strip()
         has_duration = bool(duration)
         diff = abs(duration - track_duration) if (duration and track_duration) else 0
@@ -103,6 +122,8 @@ class Candidate:
             diff=diff,
             has_duration=has_duration,
             exact=exact,
+            track_duration=track_duration or 0,
+            unverified=unverified,
         )
 
 
@@ -110,11 +131,14 @@ class Candidate:
 class SearchReport:
     candidates: list[Candidate] = field(default_factory=list)
     errors: dict[str, list[str]] = field(default_factory=dict)
+    # The providers run in parallel threads and all report into one instance.
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
     def add_error(self, provider: str, message: str) -> None:
-        bucket = self.errors.setdefault(provider, [])
-        if message not in bucket:
-            bucket.append(message)
+        with self._lock:
+            bucket = self.errors.setdefault(provider, [])
+            if message not in bucket:
+                bucket.append(message)
 
     @property
     def has_errors(self) -> bool:
@@ -139,8 +163,14 @@ def _describe_error(exc: Exception) -> str:
 
 
 # --- LRCLIB ------------------------------------------------------------------
-def _lrclib_queries(title: str, artist: str, album: str, duration: int) -> list[tuple[str, dict]]:
-    """Build a deduplicated list of (endpoint, params) pairs."""
+def _lrclib_queries(title: str, artist: str, album: str, duration: int,
+                    quick: bool = False) -> list[tuple[str, dict]]:
+    """Build a deduplicated list of (endpoint, params) pairs.
+
+    *quick* keeps only the canonical ``/get`` lookups. Batch mode tries those
+    first: they answer most tracks with one or two requests, where the full
+    fan-out costs a dozen per track against a free community service.
+    """
     queries: list[tuple[str, dict]] = []
     seen: set[tuple] = set()
 
@@ -156,6 +186,8 @@ def _lrclib_queries(title: str, artist: str, album: str, duration: int) -> list[
         if duration:
             add("get", {"track_name": title, "artist_name": artist, "album_name": album, "duration": duration})
         add("get", {"track_name": title, "artist_name": artist, "album_name": album})
+        if quick:
+            return queries
         add("search", {"track_name": title, "artist_name": artist, "album_name": album})
         add("search", {"track_name": title, "artist_name": artist})
         add("search", {"q": f"{artist} {title}"})
@@ -163,21 +195,30 @@ def _lrclib_queries(title: str, artist: str, album: str, duration: int) -> list[
         for alias in get_artist_aliases(artist):
             add("search", {"track_name": title, "artist_name": alias})
             add("search", {"q": f"{alias} {title}"})
-    else:
+    elif not quick:
         add("search", {"track_name": title})
         add("search", {"q": title})
 
     return queries
 
 
-def query_lrclib(title: str, artist: str, album: str, duration: int, report: SearchReport) -> list[Candidate]:
+def _cleaned(raw: str) -> str:
+    """clean_tag, but never empty: a title written entirely in a bracketed
+    localized form ('[自由]') would otherwise turn into an empty query."""
+    return clean_tag(raw) or (raw or "").strip()
+
+
+def query_lrclib(title: str, artist: str, album: str, duration: int, report: SearchReport,
+                 quick: bool = False) -> list[Candidate]:
     if not config.get("api", "enable_lrclib", True):
         return []
 
-    clean_t, clean_a, clean_alb = clean_tag(title), clean_tag(artist), clean_tag(album)
+    clean_t, clean_a, clean_alb = _cleaned(title), _cleaned(artist), clean_tag(album)
+    if not clean_t:
+        return []
     base_url = str(config.get("api", "lrclib_url")).rstrip("/")
     session = get_session()
-    queries = _lrclib_queries(clean_t, clean_a, clean_alb, duration)
+    queries = _lrclib_queries(clean_t, clean_a, clean_alb, duration, quick=quick)
     workers = min(len(queries), int(config.get("api", "max_workers", 8)))
     if workers <= 0:
         return []
@@ -251,7 +292,7 @@ def query_netease(title: str, artist: str, duration: int, report: SearchReport) 
     if not config.get("api", "enable_netease", True):
         return []
 
-    clean_t, clean_a = clean_tag(title), clean_tag(artist)
+    clean_t, clean_a = _cleaned(title), _cleaned(artist)
     search_url = str(config.get("api", "netease_search_url"))
     lyric_url = str(config.get("api", "netease_lyric_url"))
     limit = int(config.get("api", "netease_search_limit", 6))
@@ -271,10 +312,14 @@ def query_netease(title: str, artist: str, duration: int, report: SearchReport) 
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):
-            return []
+            raise ValueError("Unexpected response format")
         result = payload.get("result")
-        if not isinstance(result, dict):
+        if result is None:
             return []
+        if not isinstance(result, dict):
+            # The /search/get/web endpoint started returning an encrypted
+            # string; staying silent made the provider look merely empty.
+            raise ValueError("Unexpected response format (endpoint changed?)")
         songs = result.get("songs")
         return [s for s in songs if isinstance(s, dict)] if isinstance(songs, list) else []
 
@@ -287,7 +332,7 @@ def query_netease(title: str, artist: str, duration: int, report: SearchReport) 
             try:
                 found = future.result()
             except (requests.RequestException, ValueError) as exc:
-                report.add_error("NetEase", _describe_error(exc) if isinstance(exc, requests.RequestException) else "Invalid response")
+                report.add_error("NetEase", _describe_error(exc) if isinstance(exc, requests.RequestException) else str(exc))
                 continue
             for song in found:
                 song_id = song.get("id")
@@ -299,21 +344,27 @@ def query_netease(title: str, artist: str, duration: int, report: SearchReport) 
         return []
 
     def fetch_lyric(song):
-        params = {"id": song["id"], "lv": -1, "kv": -1, "tv": -1}
+        # rv=-1 also asks for "romalrc", the romanization NetEase users submit.
+        params = {"id": song["id"], "lv": -1, "kv": -1, "tv": -1, "rv": -1}
         response = session.get(lyric_url, params=params, headers=NETEASE_HEADERS, timeout=_timeout())
         response.raise_for_status()
         payload = response.json()
         if not isinstance(payload, dict):
-            return song, ""
-        lrc = payload.get("lrc")
-        return song, (lrc.get("lyric", "") if isinstance(lrc, dict) else "")
+            return song, "", ""
+
+        def lyric_of(key: str) -> str:
+            block = payload.get(key)
+            text = block.get("lyric") if isinstance(block, dict) else ""
+            return text if isinstance(text, str) else ""
+
+        return song, strip_credit_lines(lyric_of("lrc")), lyric_of("romalrc")
 
     candidates = []
     workers = max(1, min(len(songs), int(config.get("api", "max_workers", 8))))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         for future in as_completed({pool.submit(fetch_lyric, song) for song in songs}):
             try:
-                song, lyric = future.result()
+                song, lyric, romanized = future.result()
             except (requests.RequestException, ValueError) as exc:
                 report.add_error("NetEase", _describe_error(exc) if isinstance(exc, requests.RequestException) else "Invalid response")
                 continue
@@ -327,19 +378,26 @@ def query_netease(title: str, artist: str, duration: int, report: SearchReport) 
                 else ""
             )
             album_obj = song.get("album")
+            album_name = album_obj.get("name", "NetEase") if isinstance(album_obj, dict) else "NetEase"
             raw_duration = song.get("duration", 0)
-            candidates.append(
-                Candidate.build(
-                    provider="NetEase",
-                    artist=artist_names,
-                    title=song.get("name") or clean_t,
-                    album=album_obj.get("name", "NetEase") if isinstance(album_obj, dict) else "NetEase",
-                    text=lyric,
-                    duration=int(raw_duration / 1000) if isinstance(raw_duration, (int, float)) else 0,
-                    track_duration=duration,
-                )
+            common = dict(
+                provider="NetEase",
+                artist=artist_names,
+                title=song.get("name") or clean_t,
+                duration=int(raw_duration / 1000) if isinstance(raw_duration, (int, float)) else 0,
+                track_duration=duration,
             )
+            candidates.append(Candidate.build(album=album_name, text=lyric, **common))
+            if has_timestamps(romanized):
+                candidates.append(
+                    Candidate.build(album=f"{album_name} · user romanization", text=romanized, **common)
+                )
     return candidates
+
+
+def strip_credit_lines(lyrics: str) -> str:
+    """Drop provider credit headers ('作词 : …') - metadata, not lyrics."""
+    return "\n".join(line for line in lyrics.splitlines() if not is_credit_line(line))
 
 
 # --- syncedlyrics ------------------------------------------------------------
@@ -347,7 +405,7 @@ def query_syncedlyrics(title: str, artist: str, report: SearchReport) -> list[Ca
     if not (HAS_SYNCEDLYRICS and config.get("api", "enable_syncedlyrics", True)):
         return []
 
-    clean_t, clean_a = clean_tag(title), clean_tag(artist)
+    clean_t, clean_a = _cleaned(title), _cleaned(artist)
     queries = [f"{clean_a} - {clean_t}"] if clean_a else [clean_t]
     queries += [f"{alias} - {clean_t}" for alias in get_artist_aliases(clean_a)]
     queries = [q for q in dict.fromkeys(queries) if q.strip()]
@@ -364,8 +422,13 @@ def query_syncedlyrics(title: str, artist: str, report: SearchReport) -> list[Ca
 
     texts: list[str] = []
     workers = max(1, min(len(queries), int(config.get("api", "max_workers", 8))))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for future in as_completed({pool.submit(search, q) for q in queries}):
+    # syncedlyrics has no timeout of its own and walks its scrapers one after
+    # another, so the wait is capped here. The worker threads cannot be killed;
+    # they finish in the background and their results are dropped.
+    limit = float(config.get("api", "syncedlyrics_timeout_seconds", 15))
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        for future in as_completed({pool.submit(search, q) for q in queries}, timeout=limit):
             try:
                 text = future.result()
             except Exception as exc:  # third-party scrapers raise freely
@@ -373,14 +436,21 @@ def query_syncedlyrics(title: str, artist: str, report: SearchReport) -> list[Ca
                 continue
             if text and text.strip():
                 texts.append(text.strip())
+    except FutureTimeout:
+        report.add_error("syncedlyrics", f"Timeout after {limit:g}s")
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
+    # The engine returns bare text: which recording it belongs to is unknown,
+    # so the result must not borrow the searched artist and pass as a match.
     return [
         Candidate.build(
             provider="MULTI",
-            artist=clean_a or "Web",
+            artist="",
             title=clean_t,
             album="Web/Multi",
             text=text,
+            unverified=True,
         )
         for text in dict.fromkeys(texts)
     ]
@@ -399,6 +469,7 @@ def rank_key(candidate: Candidate):
     return (
         0 if candidate.exact else 1,
         0 if candidate.synced else 1,
+        1 if candidate.unverified else 0,
         script_rank,
         duration_rank,
         candidate.diff,
@@ -458,17 +529,23 @@ class SearchCache:
         return len(self._store)
 
 
-def collect_candidates(title: str, artist: str, album: str, duration: int) -> SearchReport:
-    """Query every enabled provider concurrently and return ranked candidates."""
+def collect_candidates(title: str, artist: str, album: str, duration: int,
+                       quick: bool = False) -> SearchReport:
+    """Query every enabled provider concurrently and return ranked candidates.
+
+    *quick* asks LRCLIB's canonical ``/get`` endpoint only; see
+    ``_lrclib_queries``. Ctrl+C returns at once instead of waiting for the
+    requests in flight; they finish in the background and are discarded.
+    """
     report = SearchReport()
-    jobs = {
-        "LRCLIB": lambda: query_lrclib(title, artist, album, duration, report),
-        "NetEase": lambda: query_netease(title, artist, duration, report),
-        "syncedlyrics": lambda: query_syncedlyrics(title, artist, report),
-    }
+    jobs = {"LRCLIB": lambda: query_lrclib(title, artist, album, duration, report, quick=quick)}
+    if not quick:
+        jobs["NetEase"] = lambda: query_netease(title, artist, duration, report)
+        jobs["syncedlyrics"] = lambda: query_syncedlyrics(title, artist, report)
 
     collected: list[Candidate] = []
-    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+    pool = ThreadPoolExecutor(max_workers=len(jobs))
+    try:
         futures = {pool.submit(job): name for name, job in jobs.items()}
         for future in as_completed(futures):
             name = futures[future]
@@ -477,6 +554,10 @@ def collect_candidates(title: str, artist: str, album: str, duration: int) -> Se
             except Exception as exc:  # a broken provider must not kill the run
                 log.exception("Provider %s failed", name)
                 report.add_error(name, type(exc).__name__)
+    except BaseException:
+        pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
 
     clean_a = clean_tag(artist)
     seen_texts: set[str] = set()
@@ -498,7 +579,7 @@ def pick_automatic(report: SearchReport, duration: int) -> Candidate | None:
     """Return a candidate confident enough for unattended batch tagging."""
     tolerance = int(config.get("api", "duration_tolerance_seconds", 2))
     for candidate in report.candidates:
-        if not candidate.synced or not candidate.match_artist:
+        if not candidate.synced or not candidate.match_artist or candidate.unverified:
             continue
         if duration and candidate.has_duration and candidate.diff > tolerance:
             continue

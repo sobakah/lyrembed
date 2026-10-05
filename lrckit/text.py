@@ -248,53 +248,78 @@ def segment_line(line: str) -> list[tuple[str, str]]:
     return runs
 
 
-# Characters that exist in only one writing system. The Japanese list is the
-# primary signal for shinjitai; the Chinese one is only a fallback for when
-# pykakasi is not installed, because the coverage probe below is far more
-# complete than any hand-maintained list.
-_ZH_ONLY = set("爱们这个来时说请边过还让给龙东车书长门为习乐买卖见觉学关变风飞马鸟鱼"
-               "热对难发图园员优众亲儿开问间师产权级传伤价")
-_JP_ONLY = set("円気駅働峠込辻畑様発桜実検読売価恵戦沢栄済県帰圧囲医応帯芸欠区験"
-               "関問間師産権級伝傷価")
+# Which writing systems use a character is read from the national character
+# set standards shipped with Python's codecs rather than from a hand-kept list:
+# such lists end up containing characters that Traditional Chinese (問 間 師)
+# or Simplified Chinese (区 医 欠) use as well. GB2312 is the simplified Chinese
+# standard, CP950 (Microsoft's Big5, the de facto Taiwanese encoding) the
+# traditional one, EUC-JP covers JIS X 0208 and 0212. CP950 rather than plain
+# Big5, which lacks variants like 裏; not Big5-HKSCS, which adds Japanese
+# characters such as 駅 and 円.
+_CHARSET_CODECS = ("gb2312", "cp950", "euc_jp")
 
 
-@lru_cache(maxsize=2048)
+def _encodable(char: str, codec: str) -> bool:
+    try:
+        char.encode(codec)
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
+@lru_cache(maxsize=8192)
+def _charset_evidence(char: str) -> str | None:
+    """'ja' when only Japanese standards contain *char* (shinjitai, kokuji),
+    'zh' when no Japanese standard does, None when the systems share it."""
+    gb, big5, jis = (_encodable(char, codec) for codec in _CHARSET_CODECS)
+    if jis and not (gb or big5):
+        return "ja"
+    if (gb or big5) and not jis:
+        return "zh"
+    return None
+
+
+@lru_cache(maxsize=8192)
+def _kakasi_reads(char: str) -> bool:
+    """Whether pykakasi has a reading for the single character *char*.
+
+    Probed per character because pykakasi does not merely return an empty
+    reading for a character it does not know: it may also swallow the one after
+    it ('时候' comes back as a single token '时'), so a whole-run conversion
+    cannot tell which characters were lost.
+    """
+    try:
+        items = _kakasi_instance().convert(char)
+    except Exception:
+        return False
+    return any(item.get("hepburn", "").strip() for item in items)
+
+
 def _kakasi_han_coverage(fragment: str) -> float:
     """Share of Han characters in *fragment* that pykakasi has a reading for.
 
-    pykakasi silently drops characters it does not know, and its dictionary
-    contains no simplified Chinese forms. A coverage below 1.0 therefore means
-    the run cannot be Japanese text. This probes the whole dictionary rather
-    than a curated character list.
+    pykakasi's dictionary contains no simplified Chinese forms, so a coverage
+    below 1.0 means the run cannot be Japanese text.
     """
     if not HAS_KAKASI:
         return 1.0
-    total = dropped = 0
-    try:
-        items = _kakasi_instance().convert(fragment)
-    except Exception:
+    han = [char for char in fragment if _char_class(char) == HAN]
+    if not han:
         return 1.0
-    for item in items:
-        han = sum(1 for char in item.get("orig", "") if _char_class(char) == HAN)
-        if not han:
-            continue
-        total += han
-        if not item.get("hepburn", "").strip():
-            dropped += han
-    if not total:
-        return 1.0
-    return (total - dropped) / total
+    return sum(1 for char in han if _kakasi_reads(char)) / len(han)
 
 
 def _han_evidence(fragment: str) -> str | None:
-    """Look for proof that a Han run belongs to one writing system."""
-    if any(char in _JP_ONLY for char in fragment):
-        return "ja"
-    if HAS_KAKASI:
-        if _kakasi_han_coverage(fragment) < 1.0:
-            return "zh"
-    elif any(char in _ZH_ONLY for char in fragment):
+    """Look for proof that a Han run belongs to one writing system.
+
+    Chinese evidence wins over Japanese: a character pykakasi cannot read would
+    be lost if the run were sent to it.
+    """
+    votes = {_charset_evidence(char) for char in fragment if _char_class(char) == HAN}
+    if "zh" in votes or _kakasi_han_coverage(fragment) < 1.0:
         return "zh"
+    if "ja" in votes:
+        return "ja"
     return None
 
 
@@ -321,7 +346,12 @@ def _line_looks_japanese(runs: list[tuple[str, str]]) -> bool:
     )
 
 
-def _resolve_han(runs: list[tuple[str, str]], index: int, han_default: str) -> str:
+def contains_kana(text: str) -> bool:
+    return any(_char_class(char) == KANA for char in text)
+
+
+def _resolve_han(runs: list[tuple[str, str]], index: int, han_default: str,
+                 trust_ja: bool = True) -> str:
     """Decide whether an ambiguous Han run is Japanese or Chinese.
 
     Character-level proof comes first, because a simplified form cannot occur in
@@ -329,11 +359,16 @@ def _resolve_han(runs: list[tuple[str, str]], index: int, han_default: str) -> s
     Kana touching the run, or - if nothing on the line points to another
     language - Kana separated from it by spaces. Runs written purely in shared
     characters stay ambiguous and follow the caller's choice.
+
+    Without *trust_ja* a character only Japanese standards contain is not
+    proof: the whole text has no Kana, which Japanese lyrics practically always
+    have, so such a character is more likely a rare Chinese variant missing
+    from the character sets (Hong Kong forms such as 峯 or 綫).
     """
     fragment = runs[index][1]
 
     evidence = _han_evidence(fragment)
-    if evidence:
+    if evidence == "zh" or (evidence == "ja" and trust_ja):
         return evidence
 
     if KANA in (
@@ -384,7 +419,8 @@ def _join_pieces(pieces: list[tuple[str, bool]]) -> str:
     return re.sub(r"[ \t]{2,}", " ", out).rstrip()
 
 
-def _plan_runs(segment: str, mode: str, han_default: str) -> list[tuple[str | None, str]]:
+def _plan_runs(segment: str, mode: str, han_default: str,
+               trust_ja: bool = True) -> list[tuple[str | None, str]]:
     """Map each script run to the backend that should convert it.
 
     A target of None means the fragment is left untouched. Adjacent runs with
@@ -409,7 +445,7 @@ def _plan_runs(segment: str, mode: str, han_default: str) -> list[tuple[str | No
             elif kind == KANA:
                 target = "ja"
             elif kind == HAN:
-                target = _resolve_han(runs, index, han_default)
+                target = _resolve_han(runs, index, han_default, trust_ja)
             elif kind == OTHER:
                 target = "any"
             else:
@@ -427,19 +463,23 @@ def _plan_runs(segment: str, mode: str, han_default: str) -> list[tuple[str | No
     return merged
 
 
-def _run_plan(segment: str, mode: str, han_default: str) -> str:
+def _run_plan(segment: str, mode: str, han_default: str, trust_ja: bool = True) -> str:
     if not segment.strip():
         return segment
     pieces = [
         (_convert_run(fragment, target) if target else fragment, target is not None)
-        for target, fragment in _plan_runs(segment, mode, han_default)
+        for target, fragment in _plan_runs(segment, mode, han_default, trust_ja)
     ]
     return _join_pieces(pieces)
 
 
-def romanize_mixed_segment(segment: str, han_default: str = "zh") -> str:
-    """Romanize a segment that may contain several scripts at once."""
-    return _run_plan(segment, "mixed", han_default)
+def romanize_mixed_segment(segment: str, han_default: str = "zh", trust_ja: bool = True) -> str:
+    """Romanize a segment that may contain several scripts at once.
+
+    *trust_ja* is False when the surrounding text has no Kana; see
+    ``_resolve_han``.
+    """
+    return _run_plan(segment, "mixed", han_default, trust_ja)
 
 
 def romanize_single_segment(segment: str, lang: str) -> str:
@@ -487,6 +527,62 @@ def _join_kakasi(items) -> str:
     return out
 
 
+def _romanize_unreadable_han(fragment: str) -> str:
+    """Fallback for Han characters pykakasi has no reading for."""
+    if HAS_PYPINYIN:
+        return romanize_segment(fragment, "zh")
+    if HAS_ANYASCII:
+        return romanize_segment(fragment, "any")
+    return fragment
+
+
+def _kakasi_lossless(chunk: str) -> str | None:
+    """Convert *chunk* with pykakasi, or None if any character went missing."""
+    items = _kakasi_instance().convert(chunk)
+    if "".join(item.get("orig", "") for item in items) != chunk:
+        return None
+    if any(item.get("orig", "").strip() and not item.get("hepburn", "").strip() for item in items):
+        return None
+    return _join_kakasi(items)
+
+
+def _romanize_japanese(segment: str) -> str:
+    """pykakasi conversion that never loses characters.
+
+    Characters pykakasi cannot read are cut out before conversion, because it
+    would otherwise drop them together with their neighbour, and are converted
+    by the Chinese fallback instead. Readable stretches stay whole so Kanji
+    keep their Kana context. If a stretch still comes back incomplete, it is
+    passed through unchanged rather than saved with holes in it.
+    """
+    pieces: list[tuple[str, bool]] = []
+    chunk = ""
+    unreadable = ""
+
+    def flush() -> None:
+        nonlocal chunk, unreadable
+        if chunk:
+            converted = _kakasi_lossless(chunk)
+            pieces.append((converted if converted is not None else chunk, converted is not None))
+            chunk = ""
+        if unreadable:
+            # Kept together so pypinyin can use phrase context for polyphones.
+            pieces.append((_romanize_unreadable_han(unreadable), True))
+            unreadable = ""
+
+    for char in segment:
+        if _char_class(char) == HAN and not _kakasi_reads(char):
+            if chunk:
+                flush()
+            unreadable += char
+        else:
+            if unreadable:
+                flush()
+            chunk += char
+    flush()
+    return _join_pieces(pieces)
+
+
 def romanize_segment(segment: str, lang: str) -> str:
     if not segment.strip():
         return segment
@@ -494,11 +590,12 @@ def romanize_segment(segment: str, lang: str) -> str:
         if lang == "ko" and HAS_KOREAN:
             result = KoRomanizer(segment).romanize()
         elif lang == "ja" and HAS_KAKASI:
-            result = _join_kakasi(_kakasi_instance().convert(segment))
+            result = _romanize_japanese(segment)
         elif lang == "zh" and HAS_PYPINYIN:
             result = " ".join(token[0] for token in pinyin(segment, style=Style.TONE))
         elif lang == "any" and HAS_ANYASCII:
-            result = anyascii.anyascii(segment)
+            # anyascii maps characters it does not know to "", per character.
+            result = "".join(anyascii.anyascii(char) or char for char in segment)
         else:
             return segment
     except Exception:
@@ -511,19 +608,31 @@ def romanize_segment(segment: str, lang: str) -> str:
     return result
 
 
-def romanize_lyrics(lyrics: str, lang: str, han_default: str = "zh") -> str:
+def romanize_lyrics(lyrics: str, lang: str, han_default: str = "zh",
+                    keep_original: bool = False) -> str:
+    """Romanize every line, preserving LRC timestamps.
+
+    With *keep_original* each changed line is kept and followed by its
+    romanization under the same timestamp, which players supporting
+    multi-line LRC show as a pair. Unchanged lines are not duplicated.
+    """
+    trust_ja = contains_kana(lyrics)
+
     def convert(segment: str) -> str:
         if lang == "mixed":
-            return romanize_mixed_segment(segment, han_default)
+            return romanize_mixed_segment(segment, han_default, trust_ja)
         return romanize_single_segment(segment, lang)
 
     converted = []
     for line in lyrics.splitlines():
         match = TIMESTAMP_REGEX.match(line)
         if match:
-            converted.append(f"{match.group(1)}{convert(match.group(2))}")
+            result = f"{match.group(1)}{convert(match.group(2))}"
         else:
-            converted.append(convert(line))
+            result = convert(line)
+        if keep_original and result != line:
+            converted.append(line)
+        converted.append(result)
     return "\n".join(converted)
 
 
@@ -563,6 +672,7 @@ def detect_script(text: str) -> str | None:
     """
     asian: set[str] = set()
     has_other = False
+    trust_ja = contains_kana(text)
 
     for line in text.splitlines():
         if is_credit_line(line):
@@ -575,7 +685,10 @@ def detect_script(text: str) -> str | None:
             elif kind == KANA:
                 asian.add("ja")
             elif kind == HAN:
-                asian.add(_han_evidence(fragment) or ("ja" if line_has_kana else "zh"))
+                evidence = _han_evidence(fragment)
+                if evidence == "ja" and not trust_ja:
+                    evidence = None
+                asian.add(evidence or ("ja" if line_has_kana else "zh"))
             elif kind == OTHER:
                 has_other = True
 

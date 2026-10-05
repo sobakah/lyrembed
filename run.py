@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
-"""Standalone launcher so a repository checkout stays runnable as ./lrckit.py.
+"""Standalone launcher so a repository checkout stays runnable as ./run.py.
 
-The actual code lives in the sibling package directory ``lrckit/``.
+The actual code lives in the sibling package directory ``lrckit/``. The
+launcher must not be called ``lrckit.py``: without the package directory,
+``import lrckit`` would then import this file itself instead of failing.
 """
 
 import sys
@@ -39,7 +41,7 @@ except ModuleNotFoundError as exc:
     else:
         print(
             "\nExpected this layout:\n\n"
-            "    lrckit.py\n"
+            "    run.py\n"
             "    lrckit/\n"
             "        __init__.py  cli.py  app.py  providers.py\n"
             "        tagging.py   text.py editor.py ui.py config.py\n",

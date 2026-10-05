@@ -6,6 +6,8 @@ import glob
 import os
 import shutil
 import sys
+import unicodedata
+from typing import NoReturn
 
 from . import config
 
@@ -54,7 +56,7 @@ def colors_enabled() -> bool:
         return False
     if mode in ("always", "on", "true", "1"):
         return True
-    if os.environ.get("NO_COLOR") is not None:
+    if os.environ.get("NO_COLOR"):  # no-color.org: only a non-empty value counts
         return False
     if os.environ.get("TERM", "").lower() == "dumb":
         return False
@@ -122,7 +124,24 @@ def terminal_width(default: int = 80) -> int:
         return default
 
 
+class QuitRequested(Exception):
+    """Raised to end the program from deep inside a menu.
+
+    Handled once in ``cli.main``, so cleanup runs and the exit code is decided
+    in one place instead of by ``sys.exit`` calls scattered through the menus.
+    """
+
+    def __init__(self, code: int = 0) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 def safe_input(prompt: str = "", default_text: str = "") -> str:
+    """input() with an optional prefilled answer.
+
+    Ctrl+C propagates as KeyboardInterrupt (exit code 130 in ``cli.main``, the
+    same as anywhere else); end of input (Ctrl+D, an exhausted pipe) quits.
+    """
     set_hook = _rl("set_startup_hook")
     insert_text = _rl("insert_text")
     try:
@@ -132,9 +151,9 @@ def safe_input(prompt: str = "", default_text: str = "") -> str:
             # No readline: show the prefill so the user can retype or accept it.
             print(f"{StyleUI.GRAY}(current: {default_text}){StyleUI.RESET}")
         return input(prompt)
-    except (KeyboardInterrupt, EOFError):
-        print(f"\n\n{StyleUI.YELLOW}Program aborted by user.{StyleUI.RESET}")
-        sys.exit(0)
+    except EOFError:
+        print()
+        exit_script()
     finally:
         if set_hook:
             set_hook(None)
@@ -148,15 +167,35 @@ def confirm(prompt: str, default: bool = False) -> bool:
     return answer in ("y", "yes", "j", "ja")
 
 
-def exit_script(code: int = 0) -> None:
+def exit_script(code: int = 0) -> NoReturn:
     print(f"\n{StyleUI.YELLOW}Program terminated.{StyleUI.RESET}")
-    sys.exit(code)
+    raise QuitRequested(code)
+
+
+def char_width(char: str) -> int:
+    """Terminal columns *char* occupies: CJK and full-width forms take two."""
+    if unicodedata.combining(char):
+        return 0
+    return 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1
+
+
+def display_width(text: str) -> int:
+    return sum(char_width(char) for char in text)
 
 
 def _truncate(line: str, width: int) -> str:
-    if len(line) <= width:
+    """Cut *line* to *width* terminal columns, not characters - lyrics are
+    often CJK, where counting characters overflows the line by half."""
+    if display_width(line) <= width:
         return line
-    return line[: max(1, width - 1)] + "…"
+    out, used = "", 0
+    for char in line:
+        step = char_width(char)
+        if used + step > max(1, width - 1):
+            break
+        out += char
+        used += step
+    return out + "…"
 
 
 def preview_text(text: str, max_lines: int | None = None) -> None:
@@ -176,15 +215,18 @@ def preview_text(text: str, max_lines: int | None = None) -> None:
 def transient(msg: str):
     """Context manager printing a status line that is cleared afterwards."""
 
+    # A status line that wraps cannot be cleared with a carriage return.
+    shown = _truncate(msg, max(10, terminal_width() - 1))
+
     class _Transient:
         def __enter__(self):
             if sys.stdout.isatty():
-                print(f"{StyleUI.GRAY}{msg}{StyleUI.RESET}", end="\r", flush=True)
+                print(f"{StyleUI.GRAY}{shown}{StyleUI.RESET}", end="\r", flush=True)
             return self
 
         def __exit__(self, *exc):
             if sys.stdout.isatty():
-                print(" " * (len(msg) + 2), end="\r", flush=True)
+                print(" " * display_width(shown), end="\r", flush=True)
             return False
 
     return _Transient()
@@ -248,8 +290,10 @@ def print_primary_action(key: str, description: str) -> None:
 
 # --- path completion ---------------------------------------------------------
 def complete_path(text: str, state: int):
+    # Music folders are routinely named "Album [FLAC]" or "Live [2019]"; the
+    # brackets must not be read as a glob character class.
     expanded = os.path.expanduser(text)
-    matches = glob.glob(expanded + "*")
+    matches = glob.glob(glob.escape(expanded) + "*")
     results = [m + (os.sep if os.path.isdir(m) else " ") for m in matches]
     return results[state] if state < len(results) else None
 

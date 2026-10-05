@@ -3,6 +3,140 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.3.0] — 2026-10-05
+
+A correctness and safety release, prompted by a full code review. Romanization
+could silently lose characters, NetEase had stopped returning results without
+saying so, and several paths could crash, hang in batch mode or report the
+wrong outcome. Every fix below comes with a regression test that fails without
+it, and the lossy romanization was checked against real lyrics.
+
+**If you romanized Chinese lyrics with *Mixed scripts* (or *Japanese*) in an
+earlier version, check them** — see *Upgrading* below. Korean and Japanese
+songs, and Chinese songs romanized with *Mandarin*, are not affected.
+
+### Fixed
+
+* **Romanization lost characters.** pykakasi does not only return an empty
+  reading for a character it does not know; it can also swallow the next one.
+  The old guard caught only a completely empty result, so partial loss went
+  through: `区别` was saved as `ku`, `鄉間的歌謠` as `teki kayou`. Unreadable
+  characters are now cut out before pykakasi sees the text and converted with
+  pypinyin (or anyascii), and every conversion is checked for completeness.
+* **Chinese was read as Japanese.** The hand-kept list of "Japanese-only"
+  characters contained `問 間 師 級 傷`, which Traditional Chinese uses, and
+  `区 医 欠 芸`, which Simplified Chinese uses. `時間` became `jikan`, `老師`
+  became `roushi`. Which writing systems use a character is now looked up in
+  the GB2312, CP950 (Big5) and JIS character sets that ship with Python, and a
+  Japanese-only character only counts when the text contains Kana somewhere —
+  so rare Chinese variants such as `裏` are not misread either.
+* **NetEase returned nothing.** Its search endpoint now answers with an
+  encrypted string, which the provider silently treated as "no results". The
+  default endpoint is `/api/search/get`, and an unreadable response is
+  reported as a provider notice.
+* **NetEase credit headers were embedded.** `作词 : …`, `作曲 : …` and similar
+  lines are removed from NetEase lyrics.
+* **`syncedlyrics` results passed as matches.** The engine does not say which
+  recording its lyrics belong to, but its results carried the searched artist
+  and passed the artist filter. They are now marked `?unverified`, ranked after
+  verified results and never applied by `--auto`. Its wait is capped by
+  `api.syncedlyrics_timeout_seconds`; a slow scraper no longer stalls a search.
+* **"Duration OK" was shown when the track's length was unknown.** With
+  nothing to compare, the column now shows the candidate's own length.
+* **A file type added to `supported_extensions` crashed the program.** Only
+  the five supported containers are scanned; others are ignored with a
+  warning, and an unreadable file is reported on its track.
+* **Batch mode could hang or exit with 0.** With a path that was too broad,
+  the home directory or empty, `--auto` prompted for another path — blocking
+  under cron, or reading end-of-file and exiting successfully. Batch mode
+  never prompts now and exits with code 2.
+* **Exit codes were inconsistent.** Ctrl+C at a prompt exited with 0, elsewhere
+  with 130. Now: `0` quit, `1` failures in batch mode, `2` unusable path,
+  config or arguments, `130` Ctrl+C.
+* **A failed sidecar was reported as a failed save.** The lyrics were already
+  in the file; batch mode counted the track as failed and the tag menu kept
+  showing "unsaved". It is now a warning.
+* **MP3 tags were converted to ID3v2.4** on every save, and deleting lyrics
+  rewrote files that had none. The existing version is kept, and files are
+  only rewritten when there is something to remove.
+* **Tab completion failed in folders with brackets** such as `Album [FLAC]/`.
+* **Stepping back onto an unreadable track jumped forward again**, so earlier
+  tracks could not be reached.
+* **GUI editors started without their wait flag lost every edit**, because the
+  file was read back and deleted at once. Such an editor is now detected and
+  the fix suggested (`code --wait`). `$VISUAL` takes precedence over
+  `$EDITOR`, as is conventional.
+* **CJK lines were cut at the wrong width** in previews: characters were
+  counted instead of terminal columns.
+* **The user's config was ignored in a checkout**, because the shipped
+  `config.json` was found first.
+* **A broken `--config` file was silently replaced by the defaults.** It is now
+  an error. Values of the wrong type and unknown keys in any config file are
+  reported, and the default is used for them.
+* **The launcher's help for a broken checkout was unreachable.** Named
+  `lrckit.py`, it imported itself when the package directory was missing.
+* A title written only in bracketed CJK (`[自由]`) produced an empty query.
+* The User-Agent sent to LRCLIB contained a `<username>` placeholder.
+
+### Added
+
+* **`settings.romanization_layout`** chooses what Enter picks at the layout
+  prompt after romanizing: `replace` (default) replaces each line, `below`
+  keeps the original and adds the romanized line below it. Typing `1` or `2`
+  still picks a layout for a single song.
+* **Backups for `--overwrite`.** Lyrics replaced in batch mode are saved to
+  `$XDG_STATE_HOME/lrckit/backups/<time>/` first; a track whose lyrics cannot
+  be backed up is not overwritten.
+* **Keep the original line when romanizing.** After choosing the script, choose
+  between replacing each line and adding the romanized line below it with the
+  same timestamp.
+* **NetEase user romanizations** are offered as an additional candidate, marked
+  `user romanization`.
+* **Synchronized MP3 lyrics (`SYLT`)** are read and replaced on write.
+* **Ctrl+C cancels a running search** and stays on the track; `R` starts it
+  again.
+* **`--max-files N`** overrides `settings.max_file_count`; `0` means no limit.
+* **Stale sidecar warning.** Without `--sidecar`, an existing `<track>.lrc` is
+  left alone but reported, since many players prefer it; deleting a track's
+  lyrics offers to delete it too.
+* Config keys `api.syncedlyrics_timeout_seconds` (default 15) and
+  `api.batch_delay_seconds` (default 1).
+
+### Changed
+
+* **Batch mode goes easy on LRCLIB.** It asks only the exact `/get` endpoint
+  first and runs the full search across all providers just for tracks that
+  are not settled that way, and pauses between tracks. A large library used to
+  cost a dozen requests per track to a free community service.
+* **The checkout launcher is `run.py`.**
+* **`config.json` became `config.example.json`** and is no longer loaded
+  automatically. Lookup order: `--config`, then
+  `~/.config/lrckit/config.json`, then a `config.json` in a source checkout.
+* `--overwrite` and `--dry-run` require `--auto`; `--sidecar` and
+  `--no-sidecar` exclude each other. Both used to be silently ignored.
+* `settings.id3_v2_version` applies to MP3s without an ID3v2 tag only.
+* The version is defined once, in `lrckit/config.py`.
+
+### Removed
+
+* `requirements.txt` and `requirements-optional.txt` — they duplicated
+  `pyproject.toml`. Use `pip install -e ".[all]"`.
+
+### Upgrading from 0.2.x
+
+* **Check Chinese songs you romanized with *Mixed scripts*.** Earlier versions
+  replaced the original text, so lost characters cannot be recovered from the
+  file. Re-romanize them: open the track, `o` to search online, pick the
+  matching entry, `r` → *Mixed scripts*. Signs of an affected song are words
+  without tone marks among the pinyin — Japanese readings such as `teki`,
+  `ware`, `jikan`.
+* In a checkout, start the program with `./run.py`.
+* If you edited the checkout's `config.json`, move your changes to
+  `~/.config/lrckit/config.json`; `git pull` will report a conflict on that
+  file until you do.
+* If your config sets `api.netease_search_url` to `…/api/search/get/web`,
+  remove the key or change it to `https://music.163.com/api/search/get`.
+
 ## [0.2.0] — 2026-09-13
 
 The project is now called **lrckit**. Everything the old name touched moved with
@@ -166,5 +300,6 @@ LRCLIB, NetEase and `syncedlyrics`; confidence-aware ranking; batch mode with
   time. Traditional Chinese resolves less often than simplified for this
   reason.
 
+[0.3.0]: https://github.com/sobakah/lyrembed/releases/tag/0.3.0
 [0.2.0]: https://github.com/sobakah/lyrembed/releases/tag/0.2.0
 [0.1.0]: https://github.com/sobakah/lyrembed/releases/tag/0.1.0

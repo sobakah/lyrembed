@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lrckit"
-version = "0.2.0"
+dynamic = ["version"]
 description = "Interactive CLI to search, romanize and embed synchronized lyrics into audio files"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -38,5 +38,6 @@ lrckit = "lrckit.cli:main"
 [tool.setuptools]
 packages = ["lrckit"]
 
-[tool.setuptools.package-data]
-lrckit = []
+[tool.setuptools.dynamic]
+# Single source of truth; read statically, the package is not imported.
+version = { attr = "lrckit.config.__version__" }

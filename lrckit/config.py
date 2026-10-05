@@ -8,8 +8,8 @@ import os
 from pathlib import Path
 from typing import Any
 
-__version__ = "0.2.0"
-PROJECT_URL = "https://github.com/<username>/lrckit"
+__version__ = "0.3.0"
+PROJECT_URL = "https://github.com/sobakah/lrckit"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "aliases": [
@@ -35,7 +35,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "api": {
         "lrclib_url": "https://lrclib.net/api",
-        "netease_search_url": "https://music.163.com/api/search/get/web",
+        "netease_search_url": "https://music.163.com/api/search/get",
         "netease_lyric_url": "https://music.163.com/api/song/lyric",
         "timeout_seconds": 6,
         "netease_search_limit": 6,
@@ -44,6 +44,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "retry_total": 2,
         "retry_backoff": 0.3,
         "duration_tolerance_seconds": 2,
+        "syncedlyrics_timeout_seconds": 15,
+        "batch_delay_seconds": 1.0,
         "enable_lrclib": True,
         "enable_netease": True,
         "enable_syncedlyrics": True,
@@ -61,6 +63,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "write_sidecar_lrc": False,
         "id3_v2_version": 4,
         "uslt_language": "eng",
+        "romanization_layout": "replace",
         "color": "auto",
     },
 }
@@ -86,37 +89,101 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def config_search_paths() -> list[Path]:
+    """The user's config comes first; a ``config.json`` in a source checkout
+    is still honoured after it, for setups that predate the XDG location."""
     xdg = os.environ.get("XDG_CONFIG_HOME")
     config_home = Path(xdg) if xdg else Path.home() / ".config"
-    return [
-        Path(__file__).resolve().parent.parent / "config.json",
-        config_home / "lrckit" / "config.json",
-    ]
+    paths = [config_home / "lrckit" / "config.json"]
+    checkout = Path(__file__).resolve().parent.parent
+    if (checkout / "pyproject.toml").is_file():
+        paths.append(checkout / "config.json")
+    return paths
+
+
+def _matches_type(value: Any, default: Any) -> bool:
+    if isinstance(default, bool):
+        return isinstance(value, bool)
+    if isinstance(default, int):
+        return isinstance(value, int) and not isinstance(value, bool)
+    if isinstance(default, float):
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if isinstance(default, list):
+        if not isinstance(value, list):
+            return False
+        return not default or all(_matches_type(item, default[0]) for item in value)
+    return isinstance(value, type(default))
+
+
+def _validate(merged: dict, user: dict, source: Path) -> list[str]:
+    """Replace values of the wrong type with the default and report them.
+
+    Without this a string where a list belongs is iterated character by
+    character, and a non-numeric limit crashes deep inside a worker thread.
+    """
+    warnings: list[str] = []
+    for section, values in user.items():
+        if section not in DEFAULT_CONFIG:
+            warnings.append(f"{source}: unknown section '{section}' is ignored.")
+            continue
+        default_section = DEFAULT_CONFIG[section]
+        if not _matches_type(values, default_section):
+            warnings.append(f"{source}: '{section}' has the wrong type, using the defaults.")
+            merged[section] = copy.deepcopy(default_section)
+            continue
+        if not isinstance(default_section, dict):
+            continue
+        for key, value in values.items():
+            if key not in default_section:
+                warnings.append(f"{source}: unknown key '{section}.{key}' is ignored.")
+            elif not _matches_type(value, default_section[key]):
+                expected = type(default_section[key]).__name__
+                warnings.append(
+                    f"{source}: '{section}.{key}' should be of type {expected}, "
+                    f"using the default {default_section[key]!r}."
+                )
+                merged[section][key] = copy.deepcopy(default_section[key])
+    return warnings
+
+
+def _read(path: Path) -> dict:
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            loaded = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConfigError(f"Configuration file '{path}' is invalid: {exc}") from exc
+    if not isinstance(loaded, dict):
+        raise ConfigError(f"Configuration file '{path}' is not a JSON object.")
+    return loaded
 
 
 def load_config(explicit_path: Path | None = None) -> tuple[dict, list[str]]:
     """Return ``(config, warnings)``.
 
     Defaults are always present; user values are merged on top recursively.
+    A file passed explicitly must be usable - running with defaults the user
+    did not ask for is worse than stopping - so it raises ConfigError. A broken
+    file found on the search paths only produces a warning.
     """
-    warnings: list[str] = []
-    paths = [explicit_path] if explicit_path else config_search_paths()
+    if explicit_path is not None:
+        if not explicit_path.is_file():
+            raise ConfigError(f"Config file not found: {explicit_path}")
+        loaded = _read(explicit_path)
+        merged = _deep_merge(DEFAULT_CONFIG, loaded)
+        warnings = _validate(merged, loaded, explicit_path)
+        merged["_source"] = str(explicit_path)
+        return merged, warnings
 
-    for path in paths:
-        if path is None or not path.is_file():
+    warnings: list[str] = []
+    for path in config_search_paths():
+        if not path.is_file():
             continue
         try:
-            with open(path, "r", encoding="utf-8") as handle:
-                loaded = json.load(handle)
-        except (OSError, json.JSONDecodeError) as exc:
-            warnings.append(f"Configuration file '{path}' is invalid, using defaults: {exc}")
+            loaded = _read(path)
+        except ConfigError as exc:
+            warnings.append(f"{exc} Using defaults.")
             continue
-
-        if not isinstance(loaded, dict):
-            warnings.append(f"Configuration file '{path}' is not a JSON object, using defaults.")
-            continue
-
         merged = _deep_merge(DEFAULT_CONFIG, loaded)
+        warnings += _validate(merged, loaded, path)
         merged["_source"] = str(path)
         return merged, warnings
 
