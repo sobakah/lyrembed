@@ -55,6 +55,10 @@ class TrackMeta:
     artist: str = ""
     album: str = ""
     album_artist: str = ""
+    # MusicBrainz recording ID and lyrics language, as written by Picard;
+    # language "zxx" means "no lyrics".
+    recording_id: str = ""
+    language: str = ""
     duration: int = 0
     lyrics: str = ""
     track_number: int = 0
@@ -107,6 +111,14 @@ def _first(values) -> str:
     if isinstance(values, (list, tuple)):
         return str(values[0]) if values else ""
     return str(values) if values is not None else ""
+
+
+def _freeform(values) -> str:
+    """First value of an MP4 freeform atom, which mutagen returns as bytes."""
+    value = values[0] if isinstance(values, list) and values else values
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", "replace")
+    return str(value) if value else ""
 
 
 def _id3_text(tags, key: str) -> str:
@@ -177,6 +189,8 @@ def read_metadata(path: Path) -> TrackMeta:
                 if value.strip():
                     meta.album_artist = value
                     break
+            meta.recording_id = _first(audio.get("musicbrainz_trackid"))
+            meta.language = _first(audio.get("language"))
             meta.track_number = _parse_number(audio.get("tracknumber"))
             meta.disc_number = _parse_number(audio.get("discnumber"))
             for key in VORBIS_LYRIC_KEYS:
@@ -191,6 +205,10 @@ def read_metadata(path: Path) -> TrackMeta:
             meta.artist = _id3_text(tags, "TPE1")
             meta.album = _id3_text(tags, "TALB")
             meta.album_artist = _id3_text(tags, "TPE2")
+            meta.language = _id3_text(tags, "TLAN")
+            ufid = tags.get("UFID:http://musicbrainz.org") if tags else None
+            if ufid is not None:
+                meta.recording_id = bytes(ufid.data).decode("ascii", "replace")
             meta.track_number = _parse_number(_id3_text(tags, "TRCK"))
             meta.disc_number = _parse_number(_id3_text(tags, "TPOS"))
             if tags:
@@ -210,6 +228,8 @@ def read_metadata(path: Path) -> TrackMeta:
             meta.artist = _first(audio.get("\xa9ART"))
             meta.album = _first(audio.get("\xa9alb"))
             meta.album_artist = _first(audio.get("aART"))
+            meta.recording_id = _freeform(audio.get("----:com.apple.iTunes:MusicBrainz Track Id"))
+            meta.language = _freeform(audio.get("----:com.apple.iTunes:LANGUAGE"))
             meta.track_number = _parse_number(audio.get("trkn"))
             meta.disc_number = _parse_number(audio.get("disk"))
             meta.lyrics = _first(audio.get(MP4_LYRIC_KEY))
@@ -228,6 +248,8 @@ def read_metadata(path: Path) -> TrackMeta:
     meta.artist = meta.artist.strip()
     meta.album = meta.album.strip()
     meta.album_artist = meta.album_artist.strip()
+    meta.recording_id = meta.recording_id.strip()
+    meta.language = meta.language.strip()
     meta.lyrics = meta.lyrics.strip()
     return meta
 

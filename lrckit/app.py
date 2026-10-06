@@ -11,6 +11,8 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 
+import requests
+
 from . import config, providers, tagging, text
 from .editor import EditorError, open_editor
 from .providers import Candidate, SearchReport
@@ -280,7 +282,7 @@ def duration_label(cand: Candidate) -> str:
 
 def print_candidates(candidates: list[Candidate], highlight: int | None = None) -> None:
     print(f"{StyleUI.BOLD}Found lyrics ({len(candidates)}):{StyleUI.RESET}")
-    colors = {"LRCLIB": StyleUI.BLUE, "NetEase": StyleUI.MAGENTA, "MULTI": StyleUI.CYAN}
+    colors = {"LRCLIB": StyleUI.BLUE, "NETEASE": StyleUI.MAGENTA, "SYNCEDLYRICS": StyleUI.CYAN}
     for index, cand in enumerate(candidates, 1):
         sync = badge("SYNC", StyleUI.GREEN) if cand.synced else badge("PLAIN", StyleUI.YELLOW)
         script = script_badge("latin" if cand.latin else "mixed" if cand.mixed else "original", align=True)
@@ -289,6 +291,9 @@ def print_candidates(candidates: list[Candidate], highlight: int | None = None) 
         duration = duration_label(cand)
         exact = f" {StyleUI.GREEN}✓exact{StyleUI.RESET}" if cand.exact else ""
         unverified = f" {StyleUI.YELLOW}?unverified{StyleUI.RESET}" if cand.unverified else ""
+        mismatch = [label for label, ok in (("artist", cand.match_artist), ("title", cand.match_title)) if not ok]
+        if mismatch:
+            unverified += f" {StyleUI.RED}≠{'/'.join(mismatch)}{StyleUI.RESET}"
 
         selected = index == highlight
         marker = f"{StyleUI.GREEN}{StyleUI.BOLD}▶{StyleUI.RESET}" if selected else " "
@@ -422,7 +427,7 @@ def inspect_and_confirm(lyrics: str, source_label: str = "Selection") -> str | N
             preview_text(current)
         show_preview = True
 
-        print_primary_action("y", "Apply these lyrics")
+        print_primary_action("Enter", "Apply these lyrics")
         print_menu([
             ("Edit", [
                 ("e", "Open in editor"),
@@ -452,10 +457,10 @@ def inspect_and_confirm(lyrics: str, source_label: str = "Selection") -> str | N
                 info("No changes.")
             else:
                 current = edited
-                success("Edits taken over - press 'y' to apply them to the file.")
+                success("Edits taken over - press Enter to apply them to the file.")
         elif action == "r":
             current = prompt_romanization(current)
-        elif action == "y":
+        elif action in ("", "y"):  # 'y' still works for those used to it
             if not current.strip():
                 warn("Lyrics are empty - nothing to apply.")
                 continue
@@ -537,12 +542,12 @@ def manage_existing_lyrics(meta: TrackMeta, cache: MetadataCache) -> Action:
             except EditorError as exc:
                 error(str(exc))
                 continue
-            if current != saved and confirm("Save changes?") and persist(current):
+            if current != saved and confirm("Save changes?", default=True) and persist(current):
                 saved = current
 
         elif action == "r":
             current = prompt_romanization(current)
-            if current != saved and confirm("Save romanized lyrics?") and persist(current):
+            if current != saved and confirm("Save romanized lyrics?", default=True) and persist(current):
                 saved = current
 
         elif action == "w":
@@ -582,6 +587,17 @@ def manage_existing_lyrics(meta: TrackMeta, cache: MetadataCache) -> Action:
             warn("Unknown option.")
 
 
+def default_highlight(report: SearchReport, duration: int) -> int | None:
+    """The entry Enter saves after a search: the one batch mode would apply
+    (synced, matching, right length), else an exact match on top."""
+    confident = providers.pick_automatic(report, duration)
+    if confident is not None:
+        return report.candidates.index(confident) + 1
+    if report.candidates and report.candidates[0].exact:
+        return 1
+    return None
+
+
 def select_lyrics(meta: TrackMeta, cache: providers.SearchCache) -> tuple[Action, str | None]:
     """Search menu. Returns (action, lyrics)."""
     current_title, current_artist, current_album = meta.title, meta.search_artist, meta.album
@@ -614,22 +630,39 @@ def select_lyrics(meta: TrackMeta, cache: providers.SearchCache) -> tuple[Action
                     print()
                     warn("Search cancelled - press R to search again.")
                 else:
-                    highlight = 1 if (report.candidates and report.candidates[0].exact) else None
+                    highlight = default_highlight(report, meta.duration)
                     entry = cache.set(key, providers.CachedSearch(report, highlight))
             else:
                 info("Using cached search results.")
 
             if entry is not None:
                 print_provider_errors(entry.report)
+                fallback = []
+                if entry.report.alias_fallback:
+                    fallback.append("as " + ", ".join(text.get_artist_aliases(text.clean_tag(current_artist) or current_artist)))
+                if entry.report.scraper_fallback:
+                    fallback.append("via syncedlyrics (" + ", ".join(config.get("api", "syncedlyrics_providers") or ["all sources"]) + ")")
+                if fallback:
+                    info(f"No synced lyrics from LRCLIB or NetEase - also searched {' and '.join(fallback)}.")
 
         report = entry.report if entry else None
-        candidates = report.candidates if report else []
+        hidden = report.unrelated if report else []
+        unsearched_aliases = (
+            text.get_artist_aliases(text.clean_tag(current_artist) or current_artist)
+            if report is not None and not report.aliases_searched else []
+        )
+        candidates = (report.candidates + (hidden if entry.show_unrelated else [])) if report else []
+        if report is not None and report.instrumental:
+            warn(f"♪ Marked as instrumental by {report.instrumental_summary()} - "
+                 f"this track most likely has no lyrics.")
         if not candidates:
             if entry is not None:
-                warn("No matching results found.")
+                warn("No results match this track's title and artist.")
                 entry.highlight = None
         else:
             print_candidates(candidates, highlight=entry.highlight if entry else None)
+        if hidden and not entry.show_unrelated:
+            info(f"{len(hidden)} result(s) for other titles or artists hidden - 'u' shows them.")
 
         # Enter confirms the highlighted entry: the exact match a search found,
         # or the one inspected last before returning to this list.
@@ -640,12 +673,12 @@ def select_lyrics(meta: TrackMeta, cache: providers.SearchCache) -> tuple[Action
         if confirmable is not None:
             print_primary_action("Enter", f"Save {describe_candidate(highlight, confirmable)}")
         print_menu([
-            ("Lyrics", [
-                (f"1-{upper}", "Inspect and select"),
+            ("Lyrics", ([(f"1-{upper}", "Inspect and select")] if candidates else []) + [
                 ("m", "Adjust search query"),
                 ("n", "Enter manually (editor)"),
                 ("R", "Repeat search"),
-            ]),
+            ] + ([("u", ("Hide" if entry.show_unrelated else "Show") + f" {len(hidden)} unrelated")] if hidden else [])
+              + ([("a", "Search with aliases too")] if unsearched_aliases else [])),
             NAVIGATION_GROUP,
         ])
 
@@ -664,6 +697,24 @@ def select_lyrics(meta: TrackMeta, cache: providers.SearchCache) -> tuple[Action
         elif lowered == "r":
             need_search = True
             force_refresh = True
+        elif lowered == "a" and unsearched_aliases:
+            info(f"Also searching as {', '.join(unsearched_aliases)}.")
+            try:
+                with transient("Searching lyrics with aliases... Ctrl+C cancels"):
+                    report = providers.collect_candidates(
+                        current_title, current_artist, current_album, meta.duration, aliases=True
+                    )
+            except KeyboardInterrupt:
+                print()
+                warn("Search cancelled.")
+                continue
+            highlight = default_highlight(report, meta.duration)
+            entry = cache.set(key, providers.CachedSearch(report, highlight))
+            print_provider_errors(report)
+        elif lowered == "u" and hidden:
+            entry.show_unrelated = not entry.show_unrelated
+            if entry.highlight and entry.highlight > len(report.candidates):
+                entry.highlight = None
         elif lowered == "m":
             query = safe_input("New search query (title or 'Artist - Title'): ", default_text=last_query).strip()
             if query:
@@ -733,6 +784,27 @@ def display_tree(files: list[Path], base_dir: Path, cache: MetadataCache,
             print(f"  {choice_key(f'{index:3d}', StyleUI.GREEN, index == selected)} {marker} {meta.label}")
 
 
+# --- instrumental tracks -----------------------------------------------------
+def instrumental_hint(meta: TrackMeta) -> str | None:
+    """Why the track is probably instrumental, judged before any lyrics search:
+    a version note in the title, the 'no lyrics' language tag, or - when
+    enabled - MusicBrainz. A failed MusicBrainz lookup is reported, not fatal."""
+    marker = text.instrumental_marker(meta.title)
+    if marker:
+        return f"the title says '{marker}'"
+    if meta.language.lower() == "zxx":
+        return "the language tag is 'zxx' (no lyrics)"
+    if meta.recording_id and config.get("api", "enable_musicbrainz", False):
+        try:
+            verdict = providers.musicbrainz_instrumental(meta.recording_id)
+        except (requests.RequestException, ValueError) as exc:
+            warn(f"MusicBrainz lookup failed: {exc}")
+            return None
+        if verdict:
+            return f"MusicBrainz: {verdict}"
+    return None
+
+
 # --- batch mode --------------------------------------------------------------
 def find_automatic(meta: TrackMeta) -> tuple[SearchReport, Candidate | None]:
     """Search for an unattended match, as cheaply as possible.
@@ -743,7 +815,8 @@ def find_automatic(meta: TrackMeta) -> tuple[SearchReport, Candidate | None]:
     """
     report = providers.collect_candidates(meta.title, meta.search_artist, meta.album, meta.duration, quick=True)
     candidate = providers.pick_automatic(report, meta.duration)
-    if candidate is not None:
+    # An exact LRCLIB record marked instrumental settles it as well.
+    if candidate is not None or report.instrumental:
         return report, candidate
     report = providers.collect_candidates(meta.title, meta.search_artist, meta.album, meta.duration)
     return report, providers.pick_automatic(report, meta.duration)
@@ -774,6 +847,11 @@ def run_batch(files: list[Path], base_dir: Path, cache: MetadataCache,
             print(f"{StyleUI.GRAY}{prefix}: already tagged, skipped.{StyleUI.RESET}")
             skipped += 1
             continue
+        hint = instrumental_hint(meta)
+        if hint:
+            print(f"{StyleUI.GRAY}{prefix}: probably instrumental ({hint}), skipped.{StyleUI.RESET}")
+            skipped += 1
+            continue
 
         # LRCLIB is a free community service: pace the requests rather than
         # sending a burst for every track of a large library.
@@ -784,6 +862,11 @@ def run_batch(files: list[Path], base_dir: Path, cache: MetadataCache,
         with transient(f"{prefix}: searching..."):
             report, candidate = find_automatic(meta)
 
+        if candidate is None and report.instrumental:
+            print(f"{StyleUI.GRAY}{prefix}: instrumental according to "
+                  f"{report.instrumental_summary()}, skipped.{StyleUI.RESET}")
+            skipped += 1
+            continue
         if candidate is None:
             reason = "no confident match"
             if report.has_errors:
@@ -827,6 +910,206 @@ def run_batch(files: list[Path], base_dir: Path, cache: MetadataCache,
     return 1 if failed else 0
 
 
+# --- bulk actions ------------------------------------------------------------
+def parse_selection(raw: str, count: int) -> list[int] | None:
+    """Turn '1-5, 8 10' into sorted 0-based indices; empty means all tracks.
+
+    Returns None for anything malformed or out of range rather than guessing,
+    since the result decides which files get rewritten.
+    """
+    raw = raw.strip()
+    if not raw or raw.lower() == "all":
+        return list(range(count))
+    chosen: set[int] = set()
+    for part in re.split(r"[,\s]+", raw):
+        if not part:
+            continue
+        match = re.fullmatch(r"(\d+)(?:-(\d+))?", part)
+        if not match:
+            return None
+        start = int(match.group(1))
+        end = int(match.group(2) or start)
+        if start > end:
+            start, end = end, start
+        if start < 1 or end > count:
+            return None
+        chosen.update(range(start - 1, end))
+    return sorted(chosen)
+
+
+def auto_romanize(lyrics: str) -> tuple[str | None, str]:
+    """Romanize without asking: detected script, configured layout.
+
+    Returns (new lyrics, "") or (None, reason it was left alone). Han runs that
+    nothing else disambiguates are read as Chinese, the interactive default.
+    Running it twice changes nothing: Latin lyrics are skipped, and with the
+    "below" layout an existing romanization is recognised.
+    """
+    if text.script_label(lyrics) == "latin":
+        return None, "already Latin"
+    key = text.detect_script(lyrics)
+    if key not in text.ROMANIZERS:
+        return None, "no script to romanize"
+    _, available, package = text.ROMANIZERS[key]
+    if not available():
+        return None, f"'{package}' is not installed"
+    below = str(config.get("settings", "romanization_layout", "replace")).lower() == "below"
+    result = text.romanize_lyrics(lyrics, key, keep_original=below)
+    if result == lyrics:
+        return None, "already romanized"
+    return result, ""
+
+
+BULK_ACTIONS = {
+    "1": "Fetch lyrics for tracks without lyrics",
+    "2": "Romanize embedded lyrics",
+    "3": "Write .lrc sidecars from embedded lyrics",
+    "4": "Delete embedded lyrics",
+}
+
+
+def _bulk_summary(done: int, skipped: int, failed: int, backup_root: Path | None, backed_up: int) -> None:
+    print_banner("Bulk summary")
+    print(f"  {StyleUI.GREEN}Done: {done}{StyleUI.RESET}   "
+          f"{StyleUI.YELLOW}Skipped: {skipped}{StyleUI.RESET}   "
+          f"{StyleUI.RED}Failed: {failed}{StyleUI.RESET}")
+    if backed_up and backup_root is not None:
+        info(f"  The previous lyrics were backed up to {backup_root}")
+
+
+def run_bulk_action(action: str, files: list[Path], base_dir: Path, cache: MetadataCache) -> None:
+    """Apply one action that needs no per-track decision to every file.
+
+    Romanizing and deleting rewrite lyrics the user may have edited by hand, so
+    the previous text is backed up first, as batch mode does for --overwrite;
+    a track whose backup fails is left untouched.
+    """
+    if action == "1":
+        try:
+            run_batch(files, base_dir, cache, overwrite=False, dry_run=False)
+        except KeyboardInterrupt:
+            warn("\nStopped.")
+        return
+
+    delete_sidecars = False
+    if action == "4":
+        if not confirm(f"{StyleUI.RED}Delete the lyrics of {len(files)} track(s)?{StyleUI.RESET}"):
+            return
+        delete_sidecars = bool(config.get("settings", "write_sidecar_lrc", False)) or (
+            any(tagging.stale_sidecar(f) for f in files)
+            and confirm("Also delete their .lrc sidecar files?")
+        )
+
+    print_banner(f"{BULK_ACTIONS[action]} ({len(files)} files)")
+    backup_root = backup_directory() if action in ("2", "4") else None
+    done = skipped = failed = backed_up = 0
+
+    try:
+        for index, path in enumerate(files, 1):
+            meta = cache.get(path)
+            prefix = f"[{index}/{len(files)}] {meta.label}"
+            if meta.error:
+                error(f"{prefix}: unreadable ({meta.error})")
+                failed += 1
+                continue
+            if not meta.lyrics:
+                print(f"{StyleUI.GRAY}{prefix}: no lyrics, skipped.{StyleUI.RESET}")
+                skipped += 1
+                continue
+
+            new_lyrics = None
+            if action == "2":
+                new_lyrics, reason = auto_romanize(meta.lyrics)
+                if new_lyrics is None:
+                    print(f"{StyleUI.GRAY}{prefix}: {reason}, skipped.{StyleUI.RESET}")
+                    skipped += 1
+                    continue
+
+            if action == "3":
+                sidecar = tagging.sidecar_path(path)
+                try:
+                    existing = sidecar.read_text(encoding="utf-8") if sidecar.is_file() else None
+                except OSError as exc:
+                    error(f"{prefix}: could not read '{sidecar.name}': {exc}")
+                    failed += 1
+                    continue
+                if existing == meta.lyrics:
+                    print(f"{StyleUI.GRAY}{prefix}: {sidecar.name} is up to date, skipped.{StyleUI.RESET}")
+                    skipped += 1
+                    continue
+                try:
+                    if existing is not None:
+                        if backup_root is None:
+                            backup_root = backup_directory()
+                        backup_lyrics(backup_root, base_dir, path, existing)
+                        backed_up += 1
+                    tagging.write_sidecar(path, meta.lyrics)
+                except TaggingError as exc:
+                    error(f"{prefix}: {exc}")
+                    failed += 1
+                    continue
+                success(f"{prefix}: wrote {tagging.sidecar_path(path).name}.")
+                done += 1
+                continue
+
+            try:
+                backup_lyrics(backup_root, base_dir, path, meta.lyrics)
+            except TaggingError as exc:
+                error(f"{prefix}: {exc} - left unchanged.")
+                failed += 1
+                continue
+            backed_up += 1
+
+            if action == "2":
+                if not save_lyrics(path, new_lyrics, prefix=prefix):
+                    failed += 1
+                    continue
+                success(f"{prefix}: romanized.")
+            else:
+                try:
+                    tagging.delete_lyrics(path)
+                    if delete_sidecars:
+                        tagging.delete_sidecar(path)
+                except TaggingError as exc:
+                    error(f"{prefix}: {exc}")
+                    failed += 1
+                    continue
+                success(f"{prefix}: lyrics deleted.")
+            cache.invalidate(path)
+            done += 1
+    except KeyboardInterrupt:
+        warn("\nStopped; the remaining tracks were not touched.")
+
+    _bulk_summary(done, skipped, failed, backup_root, backed_up)
+
+
+def bulk_menu(files: list[Path], base_dir: Path, cache: MetadataCache) -> None:
+    """Pick an action, then the tracks it applies to."""
+    print(f"\n{StyleUI.BOLD}Bulk actions{StyleUI.RESET} {StyleUI.GRAY}(run without further questions){StyleUI.RESET}")
+    for key, label in BULK_ACTIONS.items():
+        print(f"  {choice_key(key, StyleUI.GREEN)} {label}")
+    print(f"  {choice_key('b', StyleUI.YELLOW)} Back")
+    action = safe_input(f"{StyleUI.BOLD}Action: {StyleUI.RESET}").strip().lower()
+    if action not in BULK_ACTIONS:
+        return
+    if action == "2":
+        layout = str(config.get("settings", "romanization_layout", "replace")).lower()
+        info("Uses the detected script per track; Han characters default to Chinese. "
+             f"Layout: {'original kept, romanized line below' if layout == 'below' else 'replace'} "
+             "(settings.romanization_layout).")
+
+    while True:
+        raw = safe_input(f"{StyleUI.BOLD}Tracks (Enter = all {len(files)}, e.g. 1-5,8; b = back): {StyleUI.RESET}")
+        if raw.strip().lower() == "b":
+            return
+        selection = parse_selection(raw, len(files))
+        if selection is not None:
+            break
+        warn(f"Use numbers from 1 to {len(files)}, ranges like 3-7, separated by commas.")
+
+    run_bulk_action(action, [files[i] for i in selection], base_dir, cache)
+
+
 # --- interactive driver ------------------------------------------------------
 def run_interactive(files: list[Path], base_dir: Path, cache: MetadataCache) -> int:
     search_cache = providers.SearchCache(
@@ -857,6 +1140,9 @@ def run_interactive(files: list[Path], base_dir: Path, cache: MetadataCache) -> 
                     ("c", "Change directory"),
                     ("q", "Quit"),
                 ]),
+                ("Tracks", [
+                    ("a", "Bulk actions"),
+                ]),
             ])
 
             choice = safe_input(f"{StyleUI.BOLD}Action: {StyleUI.RESET}").strip().lower()
@@ -871,6 +1157,9 @@ def run_interactive(files: list[Path], base_dir: Path, cache: MetadataCache) -> 
                 files = sort_files(discovered, cache)
                 current_index = 0
                 success(f"Switched to {base_dir} ({len(files)} files).")
+                continue
+            elif choice == "a":
+                bulk_menu(files, base_dir, cache)
                 continue
             elif choice == "":
                 current_index = 0
@@ -915,6 +1204,9 @@ def run_interactive(files: list[Path], base_dir: Path, cache: MetadataCache) -> 
         if meta.search_artist != meta.artist:
             print(f"{StyleUI.BOLD}Search:{StyleUI.RESET} {StyleUI.GRAY}as album artist{StyleUI.RESET} {meta.search_artist}")
         print(f"{StyleUI.BOLD}Album:{StyleUI.RESET}  {meta.album or 'N/A'} | {length}")
+        hint = instrumental_hint(meta)
+        if hint:
+            warn(f"♪ Probably instrumental: {hint}.")
 
         if meta.lyrics:
             navigation = manage_existing_lyrics(meta, cache)

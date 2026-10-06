@@ -49,7 +49,7 @@ def test_defaults_are_not_mutated_by_merge(tmp_path):
     path = tmp_path / "config.json"
     path.write_text('{"aliases": [["foo"]]}', encoding="utf-8")
     config.load_config(path)
-    assert config.DEFAULT_CONFIG["aliases"][0][0] == "tomorrow x together"
+    assert config.DEFAULT_CONFIG["aliases"] == []
 
 
 # --- artist matching ---------------------------------------------------------
@@ -57,7 +57,7 @@ def test_alias_lookup_respects_word_boundaries():
     # "Liu Yifei" used to match the IU alias group via a naive substring test.
     assert text.get_artist_aliases("Liu Yifei") == []
     assert "이지은" in text.get_artist_aliases("IU")
-    assert "tomorrow x together" in text.get_artist_aliases("TXT")
+    assert "tomorrow x together" in [a.lower() for a in text.get_artist_aliases("TXT")]
 
 
 def test_matches_artist_rejects_substring_false_positives():
@@ -390,22 +390,36 @@ def test_unknown_duration_does_not_outrank_verified_match():
     assert ranked[0] is verified
 
 
-def test_exact_match_wins():
+def test_synced_lyrics_rank_above_an_exact_plain_match(cfg):
+    # LRCLIB's exact match is often a plain-only upload; ranked first, it
+    # pushed the synced versions down and was what Enter saved.
     exact = _cand(synced=False, exact=True, has_duration=True)
     fuzzy = _cand(synced=True, exact=False, has_duration=True)
+    exact_synced = _cand(synced=True, exact=True, has_duration=True)
+    assert sorted([exact, fuzzy], key=providers.rank_key)[0] is fuzzy
+    assert sorted([exact, fuzzy, exact_synced], key=providers.rank_key)[0] is exact_synced
+    cfg["settings"]["prefer_synced"] = False
     assert sorted([fuzzy, exact], key=providers.rank_key)[0] is exact
 
 
-def test_prefer_latin_is_configurable():
-    original = _cand(synced=True, latin=False, has_duration=True)
-    romanized = _cand(synced=True, latin=True, has_duration=True)
+def test_enter_saves_the_synced_match_not_the_exact_plain_one(cfg):
+    plain = _built(provider="LRCLIB", artist="A", title="Song", duration=200, exact=True, text="la la")
+    synced = _built(provider="NETEASE", artist="A", title="Song", duration=201)
+    report = providers.SearchReport(candidates=sorted([plain, synced], key=providers.rank_key))
+    assert report.candidates[app.default_highlight(report, 200) - 1] is synced
+    only_plain = providers.SearchReport(candidates=[plain])
+    assert app.default_highlight(only_plain, 200) == 1
 
-    config.CONFIG["settings"]["prefer_latin"] = True
-    assert sorted([original, romanized], key=providers.rank_key)[0] is romanized
 
-    config.CONFIG["settings"]["prefer_latin"] = False
+def test_prefer_latin_is_off_by_default_and_then_neutral(cfg):
+    original = _cand(synced=True, latin=False, has_duration=True, diff=0)
+    romanized = _cand(synced=True, latin=True, has_duration=True, diff=3)
+    # Off: the script plays no part, so the closer duration wins.
     assert sorted([romanized, original], key=providers.rank_key)[0] is original
-    config.CONFIG["settings"]["prefer_latin"] = True
+    assert sorted([original, romanized], key=providers.rank_key)[0] is original
+
+    cfg["settings"]["prefer_latin"] = True
+    assert sorted([original, romanized], key=providers.rank_key)[0] is romanized
 
 
 def test_exact_flag_does_not_depend_on_response_order(monkeypatch):
@@ -801,7 +815,7 @@ def test_wrong_types_fall_back_to_defaults(tmp_path):
     merged, warnings = config.load_config(path)
     assert merged["settings"]["supported_extensions"] == config.DEFAULT_CONFIG["settings"]["supported_extensions"]
     assert merged["settings"]["preview_lines"] == 16
-    assert merged["settings"]["prefer_latin"] is True
+    assert merged["settings"]["prefer_latin"] is False
     assert merged["api"]["batch_delay_seconds"] == 2      # an int is a valid float
     joined = " ".join(warnings)
     assert "supported_extensions" in joined and "preview_lines" in joined
@@ -811,11 +825,61 @@ def test_wrong_types_fall_back_to_defaults(tmp_path):
 def test_example_config_matches_the_defaults():
     import json
 
-    example = json.loads((Path(__file__).resolve().parent.parent / "config.example.json")
-                         .read_text(encoding="utf-8"))
+    path = Path(__file__).resolve().parent.parent / "config.example.json"
+    assert json.loads(path.read_text(encoding="utf-8")) == config.example_config()
+
+
+def test_example_config_explains_every_key_and_loads_as_the_defaults():
+    # A copied example must work: its '_' comments are ignored, not reported.
+    path = Path(__file__).resolve().parent.parent / "config.example.json"
+    merged, warnings = config.load_config(path)
+    assert warnings == []
+    merged.pop("_source")
     expected = copy.deepcopy(config.DEFAULT_CONFIG)
-    del expected["api"]["user_agent"]
-    assert example == expected
+    assert merged == expected
+    example = config.example_config()
+    for section, default in config.DEFAULT_CONFIG.items():
+        if isinstance(default, dict):
+            for key in default:
+                if key != "user_agent":
+                    assert example[section][f"_{key}"], f"{section}.{key} has no explanation"
+
+
+def test_builtin_aliases_come_from_the_data_file(cfg):
+    assert any("BTS" in g for g in config.builtin_aliases())
+    assert "투모로우바이투게더" in text.get_artist_aliases("TXT")
+    assert "周杰倫" in text.get_artist_aliases("Jay Chou")
+    assert text.matches_artist("Eason Chan", "陳奕迅")
+
+
+def test_builtin_aliases_are_unambiguous():
+    # A name in two groups, or matching inside another group's name, would
+    # join two artists into one.
+    groups = config.builtin_aliases()
+    names = [name.lower() for group in groups for name in group]
+    assert len(names) == len(set(names))
+    for i, group in enumerate(groups):
+        for name in group:
+            for j, other in enumerate(groups):
+                if i != j:
+                    assert not any(text._contains_alias(o, name) for o in other), (name, other)
+
+
+def test_user_aliases_extend_and_merge_with_the_builtin_ones(cfg):
+    cfg["aliases"] = [["TXT", "투바투"], ["Some Band", "어떤 밴드"]]
+    assert {"투모로우바이투게더", "투바투"} <= set(text.get_artist_aliases("TXT"))
+    assert text.get_artist_aliases("Some Band") == ["어떤 밴드"]
+    assert "아이유" in text.get_artist_aliases("IU")                # built-ins still there
+
+
+def test_list_aliases_prints_the_groups_in_effect(cfg, capsys, monkeypatch, tmp_path):
+    from lrckit import cli
+
+    user = tmp_path / "config.json"
+    user.write_text('{"aliases": [["Some Band", "어떤 밴드"]]}', encoding="utf-8")
+    assert cli.main(["--list-aliases", "-c", str(user), "--color", "never"]) == 0
+    out = capsys.readouterr().out
+    assert "Some Band = 어떤 밴드" in out and "TOMORROW X TOGETHER = TXT" in out
 
 
 # command line
@@ -1215,3 +1279,519 @@ def test_japanese_only_characters_need_kana_somewhere_in_the_text():
     # With Kana in the song, shinjitai still mark a Kanji-only line as Japanese.
     assert text.romanize_lyrics("[00:01.00]駅前\n[00:02.00]ありがとう", "mixed") == \
         "[00:01.00]ekimae\n[00:02.00]arigatou"
+
+
+# bulk actions
+def _flac_with_lyrics(path: Path, lyrics: str) -> Path:
+    from mutagen.flac import FLAC
+
+    _make_flac(path)
+    audio = FLAC(path)
+    audio["title"], audio["artist"] = path.stem, "Artist"
+    audio["LYRICS"] = lyrics
+    audio.save()
+    return path
+
+
+@pytest.fixture
+def state_dir(tmp_path, monkeypatch):
+    state = tmp_path / "state"
+    monkeypatch.setenv("XDG_STATE_HOME", str(state))
+    return state
+
+
+def test_selection_parsing():
+    assert app.parse_selection("", 5) == [0, 1, 2, 3, 4]
+    assert app.parse_selection("1-3, 5", 5) == [0, 1, 2, 4]
+    assert app.parse_selection("4-2 2", 5) == [1, 2, 3]
+    assert app.parse_selection("0", 5) is None
+    assert app.parse_selection("6", 5) is None
+    assert app.parse_selection("1;x", 5) is None
+
+
+@pytest.mark.skipif(not (text.HAS_KOREAN or text.HAS_ANYASCII),
+                    reason="korean-romanizer or anyascii required")
+def test_keeping_the_original_twice_does_not_double_lines():
+    once = text.romanize_lyrics("[00:01.00]사랑해\n[00:02.00]hello", "ko", keep_original=True)
+    assert text.romanize_lyrics(once, "ko", keep_original=True) == once
+
+
+@pytest.mark.skipif(not text.HAS_KOREAN, reason="korean-romanizer required")
+def test_bulk_romanize_backs_up_and_is_idempotent(cfg, tmp_path, state_dir):
+    cfg["settings"]["romanization_layout"] = "below"
+    music = tmp_path / "music"
+    music.mkdir()
+    korean = _flac_with_lyrics(music / "a.flac", "[00:01.00]사랑해")
+    latin = _flac_with_lyrics(music / "b.flac", "[00:01.00]hello there")
+    cache = tagging.MetadataCache()
+
+    app.run_bulk_action("2", [korean, latin], music, cache)
+    lyrics = tagging.read_metadata(korean).lyrics
+    assert lyrics.splitlines()[0] == "[00:01.00]사랑해"
+    assert lyrics.splitlines()[1].startswith("[00:01.00]sa")
+    assert tagging.read_metadata(latin).lyrics == "[00:01.00]hello there"
+    backups = list(state_dir.rglob("a.flac.lrc"))
+    assert len(backups) == 1 and backups[0].read_text(encoding="utf-8") == "[00:01.00]사랑해"
+
+    app.run_bulk_action("2", [korean], music, tagging.MetadataCache())
+    assert tagging.read_metadata(korean).lyrics == lyrics
+
+
+def test_tree_bulk_delete_with_selection(cfg, tmp_path, state_dir, monkeypatch):
+    music = tmp_path / "music"
+    music.mkdir()
+    files = [_flac_with_lyrics(music / f"{n}.flac", f"[00:01.00]{n}") for n in ("a", "b", "c")]
+    # tree: a = bulk, 4 = delete, tracks 1 and 3, confirm; then quit
+    _scripted_input(monkeypatch, ["a", "4", "1,3", "y"])
+    monkeypatch.setattr(ui, "safe_input", app.safe_input)   # confirm() reads through ui
+    with pytest.raises(ui.QuitRequested):
+        app.run_interactive(files, music, tagging.MetadataCache())
+    assert [tagging.read_metadata(f).lyrics for f in files] == ["", "[00:01.00]b", ""]
+    assert len(list(state_dir.rglob("*.lrc"))) == 2
+
+
+def test_bulk_sidecar_export_backs_up_a_differing_sidecar(cfg, tmp_path, state_dir):
+    music = tmp_path / "music"
+    music.mkdir()
+    track = _flac_with_lyrics(music / "a.flac", "[00:01.00]new")
+    tagging.sidecar_path(track).write_text("[00:01.00]old", encoding="utf-8")
+
+    app.run_bulk_action("3", [track], music, tagging.MetadataCache())
+    assert tagging.sidecar_path(track).read_text(encoding="utf-8") == "[00:01.00]new"
+    assert [p.read_text(encoding="utf-8") for p in state_dir.rglob("*.lrc")] == ["[00:01.00]old"]
+
+
+# instrumental tracks and unrelated results
+def test_instrumental_markers_in_titles():
+    for title in ("Blueming (Inst.)", "Song - Instrumental", "夜に駆ける (オフボーカル)",
+                  "Song (MR)", "Song [Off Vocal Ver.]", "Song (Karaoke Version)", "平凡之路 (伴奏)"):
+        assert text.instrumental_marker(title), title
+    for title in ("Mr. Brightside", "Song (Mr. Big Cover)", "Instrumental Love", "Blueming"):
+        assert text.instrumental_marker(title) is None, title
+
+
+def test_title_matching():
+    assert text.matches_title("Love Scenario", "LOVE SCENARIO")
+    assert text.matches_title("Hey Jude - Remastered 2015", "Hey Jude")
+    assert text.matches_title("Merry Christmas Mr. Lawrence", "Merry Christmas, Mr. Lawrence")
+    assert not text.matches_title("Opening", "平凡之路")
+    assert not text.matches_title("Opening", "New Boy")
+
+
+def _fake_providers(monkeypatch, found, instrumental=None):
+    def lrclib(title, artist, album, duration, report, quick=False, aliases="none"):
+        for provider, detail in (instrumental or {}).items():
+            report.mark_instrumental(provider, detail)
+        return list(found)
+    monkeypatch.setattr(providers, "query_lrclib", lrclib)
+    monkeypatch.setattr(providers, "query_netease", lambda *a, **k: [])
+    monkeypatch.setattr(providers, "query_syncedlyrics", lambda *a, **k: [])
+
+
+def _built(**kwargs):
+    base = dict(provider="NetEase", album="X", text="[00:01.00]la la", track_duration=200)
+    base.update(kwargs)
+    return providers.Candidate.build(**base)
+
+
+def test_unrelated_results_are_kept_apart_not_shown(cfg, monkeypatch):
+    # NetEase pads searches without good hits with popular songs; when no
+    # artist matched, all of them used to be listed.
+    filler = _built(artist="朴树", title="平凡之路", duration=300)
+    _fake_providers(monkeypatch, [filler])
+    report = providers.collect_candidates("Opening", "Studio Ghibli Orchestra", "", 200)
+    assert report.candidates == [] and report.unrelated == [filler]
+
+
+def test_translated_title_counts_on_matching_duration(cfg, monkeypatch):
+    right = _built(artist="iKON", title="LOVE SCENARIO", duration=201)
+    other = _built(artist="iKON", title="KILLING ME", duration=180, text="[00:01.00]other")
+    _fake_providers(monkeypatch, [right, other])
+    report = providers.collect_candidates("사랑을 했다", "iKON", "", 200)
+    assert report.candidates == [right] and report.unrelated == [other]
+
+
+def test_vocal_version_is_no_match_for_an_instrumental(cfg, monkeypatch):
+    # Same artist, same length - but the sung version's lyrics.
+    vocal = _built(artist="IU", title="Blueming", duration=200)
+    exact = _built(provider="LRCLIB", artist="IU", title="Blueming (Love poem)", duration=200,
+                   exact=True, text="[00:01.00]exact")
+    _fake_providers(monkeypatch, [vocal, exact])
+    report = providers.collect_candidates("Blueming (Inst.)", "IU", "", 200)
+    assert report.candidates == [] and len(report.unrelated) == 2
+    assert providers.pick_automatic(report, 200) is None
+
+
+def test_lrclib_instrumental_flag_is_reported(cfg, monkeypatch):
+    record = {"id": 1, "trackName": "Merry Christmas Mr. Lawrence", "artistName": "Ryuichi Sakamoto",
+              "duration": 347, "instrumental": True, "plainLyrics": None, "syncedLyrics": None}
+
+    class FakeResponse:
+        status_code = 200
+        reason = "OK"
+
+        def __init__(self, url):
+            self.url = url
+
+        def json(self):
+            return record if self.url.endswith("/get") else []
+
+    class FakeSession:
+        def get(self, url, params=None, timeout=None, headers=None):
+            return FakeResponse(url)
+
+    monkeypatch.setattr(providers, "get_session", lambda: FakeSession())
+    report = providers.SearchReport()
+    assert providers.query_lrclib("Merry Christmas Mr. Lawrence", "Ryuichi Sakamoto", "", 347, report) == []
+    assert report.instrumental == {"LRCLIB": "exact match"}
+
+
+def test_netease_pure_music_is_flagged_not_listed(cfg, monkeypatch):
+    song = {"id": 7, "name": "Merry Christmas Mr. Lawrence", "artists": [{"name": "坂本龍一"}],
+            "album": {"name": "A"}, "duration": 347000}
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.payload
+
+    class FakeSession:
+        def get(self, url, params=None, timeout=None, headers=None):
+            if "lyric" in url:
+                return FakeResponse({"pureMusic": True, "lrc": {"lyric": "[00:05.00]纯音乐，请欣赏"}})
+            return FakeResponse({"result": {"songs": [song]}})
+
+    monkeypatch.setattr(providers, "get_session", lambda: FakeSession())
+    report = providers.SearchReport()
+    assert providers.query_netease("Merry Christmas Mr. Lawrence", "Ryuichi Sakamoto", 347, report) == []
+    assert "NetEase" in report.instrumental
+
+
+def test_batch_skips_instrumental_tracks_without_searching(cfg, tmp_path, monkeypatch, capsys):
+    from mutagen.flac import FLAC
+
+    inst = _make_flac(tmp_path / "inst.flac")
+    audio = FLAC(inst)
+    audio["title"], audio["artist"] = "Blueming (Inst.)", "IU"
+    audio.save()
+    zxx = _make_flac(tmp_path / "zxx.flac")
+    audio = FLAC(zxx)
+    audio["title"], audio["artist"], audio["language"] = "Opening", "Orchestra", "zxx"
+    audio.save()
+    monkeypatch.setattr(providers, "collect_candidates",
+                        lambda *a, **k: pytest.fail("instrumental tracks must not be searched"))
+    assert app.run_batch([inst, zxx], tmp_path, tagging.MetadataCache(), False, False) == 0
+    out = capsys.readouterr().out
+    assert "title says 'Inst.'" in out and "'zxx'" in out
+
+
+def test_musicbrainz_verdicts(cfg, monkeypatch, tmp_path):
+    from mutagen.flac import FLAC
+
+    answers = {
+        "inst": {"relations": [{"type": "performance", "attributes": ["instrumental"],
+                                "work": {"languages": ["kor"]}}]},
+        "zxx": {"relations": [{"type": "performance", "attributes": [], "work": {"languages": ["zxx"]}}]},
+        "song": {"relations": [{"type": "performance", "attributes": [], "work": {"languages": ["kor"]}}]},
+    }
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.payload
+
+    class FakeSession:
+        def get(self, url, params=None, timeout=None, headers=None):
+            return FakeResponse(answers[url.rsplit("/", 1)[1]])
+
+    monkeypatch.setattr(providers, "get_session", lambda: FakeSession())
+    monkeypatch.setattr(providers, "_MB_INTERVAL", 0.0)
+    monkeypatch.setattr(providers, "_MB_CACHE", {})
+    assert providers.musicbrainz_instrumental("inst") == "instrumental recording"
+    assert providers.musicbrainz_instrumental("zxx") == "work without lyrics"
+    assert providers.musicbrainz_instrumental("song") is None
+
+    path = _make_flac(tmp_path / "a.flac")
+    audio = FLAC(path)
+    audio["title"], audio["artist"], audio["musicbrainz_trackid"] = "Song", "A", "zxx"
+    audio.save()
+    meta = tagging.read_metadata(path)
+    assert meta.recording_id == "zxx"
+    assert app.instrumental_hint(meta) is None              # off by default
+    cfg["api"]["enable_musicbrainz"] = True
+    assert app.instrumental_hint(meta) == "MusicBrainz: work without lyrics"
+
+
+def test_unrelated_results_are_shown_on_request(cfg, monkeypatch, capsys):
+    filler = _built(artist="朴树", title="平凡之路", duration=300)
+    _fake_providers(monkeypatch, [filler], instrumental={"LRCLIB": "exact match"})
+    _scripted_input(monkeypatch, ["u", "s"])
+    meta = tagging.TrackMeta(path=Path("x.flac"), title="Opening", artist="Orchestra", duration=200)
+    action, _ = app.select_lyrics(meta, providers.SearchCache())
+    out = capsys.readouterr().out
+    assert action is app.Action.NEXT
+    assert "Marked as instrumental by LRCLIB (exact match)" in out
+    first, _, second = out.partition("hidden - 'u' shows them")
+    assert "平凡之路" not in first and "平凡之路" in second and "≠artist" in second
+
+
+def test_syncedlyrics_results_are_labelled_by_name(cfg, monkeypatch, capsys):
+    # They used to be labelled "MULTI", which said nothing about the source.
+    class FakeEngine:
+        @staticmethod
+        def search(query, allow_plain_format=True):
+            return "[00:01.00]la la"
+
+    monkeypatch.setattr(providers, "HAS_SYNCEDLYRICS", True)
+    monkeypatch.setattr(providers, "syncedlyrics", FakeEngine, raising=False)
+    found = providers.query_syncedlyrics("Song", "Artist", providers.SearchReport())
+    cfg["settings"]["color"] = "never"
+    ui.apply_color_settings()
+    app.print_candidates(found)
+    out = capsys.readouterr().out
+    assert "[SYNCEDLYRICS]" in out and "?unverified" in out and "MULTI" not in out
+
+
+def test_netease_results_are_labelled_in_upper_case(cfg, monkeypatch):
+    song = {"id": 7, "name": "Song", "artists": [{"name": "Artist"}], "album": {"name": "A"}, "duration": 200000}
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.payload
+
+    class FakeSession:
+        def get(self, url, params=None, timeout=None, headers=None):
+            if "lyric" in url:
+                return FakeResponse({"lrc": {"lyric": "[00:01.00]la la"}})
+            return FakeResponse({"result": {"songs": [song]}})
+
+    monkeypatch.setattr(providers, "get_session", lambda: FakeSession())
+    found = providers.query_netease("Song", "Artist", 200, providers.SearchReport())
+    assert [c.provider for c in found] == ["NETEASE"]
+
+
+# alias rounds and NetEase load
+def test_lrclib_alias_queries_depend_on_the_round():
+    def artists(aliases):
+        return {p.get("artist_name") or p.get("q", "").rsplit(" ", 1)[0]
+                for _, p in providers._lrclib_queries("Song", "IU", "", 200, aliases=aliases)}
+    assert "아이유" not in artists("none") and "IU" in artists("none")
+    assert "아이유" in artists("only") and "IU" not in artists("only")
+    assert {"IU", "아이유"} <= artists("all")
+
+
+def _recording_providers(monkeypatch, first_round):
+    rounds = []
+
+    def lrclib(title, artist, album, duration, report, quick=False, aliases="none"):
+        rounds.append(aliases)
+        return list(first_round) if aliases != "only" else []
+    monkeypatch.setattr(providers, "query_lrclib", lrclib)
+    monkeypatch.setattr(providers, "query_netease", lambda *a, **k: [])
+    monkeypatch.setattr(providers, "query_syncedlyrics", lambda *a, **k: [])
+    return rounds
+
+
+def test_aliases_are_searched_only_when_the_artist_finds_too_little(cfg, monkeypatch):
+    synced = _built(provider="LRCLIB", artist="IU", title="Blueming", duration=200)
+    rounds = _recording_providers(monkeypatch, [synced])
+    report = providers.collect_candidates("Blueming", "IU", "", 200)
+    assert rounds == ["none"] and not report.aliases_searched
+
+    rounds = _recording_providers(monkeypatch, [])
+    report = providers.collect_candidates("Blueming", "IU", "", 200)
+    assert rounds == ["none", "only"] and report.alias_fallback
+
+    rounds = _recording_providers(monkeypatch, [])
+    providers.collect_candidates("Song", "Unknown Band", "", 200)
+    assert rounds == ["none"]                                  # no aliases to try
+
+    cfg["settings"]["search_all_aliases"] = True
+    rounds = _recording_providers(monkeypatch, [])
+    providers.collect_candidates("Blueming", "IU", "", 200)
+    assert rounds == ["all"]
+
+
+class _NetEaseSession:
+    """Answers NetEase searches with *songs* and counts lyric requests."""
+
+    def __init__(self, songs, search_payload=None):
+        self.songs, self.search_payload, self.lyric_requests = songs, search_payload, 0
+
+    def get(self, url, params=None, timeout=None, headers=None):
+        session = self
+
+        class Response:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                if "lyric" in url:
+                    session.lyric_requests += 1
+                    return {"lrc": {"lyric": f"[00:01.00]la {session.lyric_requests}"}}
+                return session.search_payload or {"result": {"songs": session.songs}}
+        return Response()
+
+
+def test_netease_fetches_lyrics_for_the_best_songs_only(cfg, monkeypatch):
+    songs = [{"id": i, "name": "Song", "artists": [{"name": "Artist"}], "album": {"name": "A"},
+              "duration": 200000} for i in range(1, 7)]
+    session = _NetEaseSession(songs)
+    monkeypatch.setattr(providers, "get_session", lambda: session)
+    providers.query_netease("Song", "Artist", 200, providers.SearchReport())
+    assert session.lyric_requests == 3
+
+
+def test_netease_filler_and_refusals_are_reported(cfg, monkeypatch):
+    filler = [{"id": 1, "name": "平凡之路", "artists": [{"name": "朴树"}], "duration": 300000}]
+    session = _NetEaseSession(filler)
+    monkeypatch.setattr(providers, "get_session", lambda: session)
+    report = providers.SearchReport()
+    assert providers.query_netease("Flashy", "P1Harmony", 189, report) == []
+    assert session.lyric_requests == 0
+    assert "only unrelated songs" in report.errors["NetEase"][0]
+
+    session = _NetEaseSession([], search_payload={"code": -462, "message": "请绑定手机后再试哦~"})
+    monkeypatch.setattr(providers, "get_session", lambda: session)
+    report = providers.SearchReport()
+    providers.query_netease("Flashy", "P1Harmony", 189, report)
+    assert "code -462" in report.errors["NetEase"][0]
+
+
+def test_search_menu_offers_a_search_with_aliases(cfg, monkeypatch, capsys):
+    calls = []
+
+    def collect(title, artist, album, duration, quick=False, aliases=None):
+        calls.append(aliases)
+        return providers.SearchReport(aliases_searched=bool(aliases))
+    monkeypatch.setattr(providers, "collect_candidates", collect)
+    _scripted_input(monkeypatch, ["a", "s"])
+    meta = tagging.TrackMeta(path=Path("x.flac"), title="Flashy", artist="P1Harmony", duration=189)
+    app.select_lyrics(meta, providers.SearchCache())
+    out = capsys.readouterr().out
+    assert calls == [None, True]
+    assert "Search with aliases too" in out and "피원하모니" in out
+
+
+# request rounds
+class _LrclibSession:
+    """Records LRCLIB requests; /get answers 404 when *get_found* is false."""
+
+    def __init__(self, get_found):
+        self.get_found, self.requests = get_found, []
+
+    def get(self, url, params=None, timeout=None, headers=None):
+        self.requests.append((url.rsplit("/", 1)[1], dict(params or {})))
+        found = self.get_found
+
+        class Response:
+            status_code = 200 if (found or not url.endswith("/get")) else 404
+            reason = "OK"
+
+            def json(self):
+                return [] if url.endswith("/search") else {"id": 1, "trackName": "Song", "artistName": "A",
+                                                           "syncedLyrics": "[00:01.00]la", "duration": 200}
+        return Response()
+
+
+def test_lrclib_asks_without_duration_only_when_needed(cfg, monkeypatch):
+    for found, gets in ((True, 1), (False, 2)):
+        session = _LrclibSession(found)
+        monkeypatch.setattr(providers, "get_session", lambda: session)
+        providers.query_lrclib("Song", "A", "Album", 200, providers.SearchReport())
+        get_params = [p for endpoint, p in session.requests if endpoint == "get"]
+        assert len(get_params) == gets
+        assert "duration" in get_params[0] and all("duration" not in p for p in get_params[1:])
+        assert not any("Romanized" in str(p) for _, p in session.requests)
+        assert len(session.requests) == gets + 3
+
+
+def _round_recorder(monkeypatch, first_round):
+    rounds = []
+
+    def lrclib(title, artist, album, duration, report, quick=False, aliases="none"):
+        rounds.append(("lrclib", aliases))
+        return list(first_round) if aliases != "only" else []
+
+    def scrapers(title, artist, report, aliases="none"):
+        rounds.append(("syncedlyrics", aliases))
+        return []
+    monkeypatch.setattr(providers, "query_lrclib", lrclib)
+    monkeypatch.setattr(providers, "query_netease", lambda *a, **k: [])
+    monkeypatch.setattr(providers, "query_syncedlyrics", scrapers)
+    monkeypatch.setattr(providers, "HAS_SYNCEDLYRICS", True)
+    return rounds
+
+
+def test_syncedlyrics_runs_only_when_the_first_round_falls_short(cfg, monkeypatch):
+    synced = _built(provider="LRCLIB", artist="Band", title="Song", duration=200)
+    rounds = _round_recorder(monkeypatch, [synced])
+    providers.collect_candidates("Song", "Band", "", 200)
+    assert rounds == [("lrclib", "none")]
+
+    rounds = _round_recorder(monkeypatch, [])
+    report = providers.collect_candidates("Song", "Band", "", 200)
+    assert rounds == [("lrclib", "none"), ("syncedlyrics", "none")] and report.scraper_fallback
+
+    rounds = _round_recorder(monkeypatch, [])
+    providers.collect_candidates("Song (Inst.)", "Band", "", 200)
+    assert rounds == [("lrclib", "none")]                      # nothing to gain
+
+    cfg["api"]["syncedlyrics_as_fallback"] = False
+    rounds = _round_recorder(monkeypatch, [synced])
+    providers.collect_candidates("Song", "Band", "", 200)
+    assert sorted(rounds) == [("lrclib", "none"), ("syncedlyrics", "none")]
+
+
+def test_syncedlyrics_skips_the_sources_lrckit_asks_itself(cfg, monkeypatch):
+    seen = []
+
+    class FakeEngine:
+        @staticmethod
+        def search(query, providers=None):
+            seen.append(providers)
+            return ""
+    monkeypatch.setattr(providers, "HAS_SYNCEDLYRICS", True)
+    monkeypatch.setattr(providers, "syncedlyrics", FakeEngine, raising=False)
+    providers.query_syncedlyrics("Song", "Band", providers.SearchReport())
+    assert seen == [["Musixmatch", "Megalobiz", "Genius"]]
+
+
+def test_enter_applies_inspected_lyrics(monkeypatch):
+    _scripted_input(monkeypatch, [""])
+    assert app.inspect_and_confirm("[00:01.00]la") == "[00:01.00]la"
+
+
+def test_enter_saves_edited_lyrics(cfg, tmp_path, monkeypatch):
+    track = _flac_with_lyrics(tmp_path / "a.flac", "[00:01.00]old")
+    monkeypatch.setattr(app, "open_editor", lambda text: "[00:01.00]new")
+    # e = edit, Enter = save, s = next track
+    _scripted_input(monkeypatch, ["e", "", "s"])
+    monkeypatch.setattr(ui, "safe_input", app.safe_input)
+    meta = tagging.read_metadata(track)
+    assert app.manage_existing_lyrics(meta, tagging.MetadataCache()) is app.Action.NEXT
+    assert tagging.read_metadata(track).lyrics == "[00:01.00]new"

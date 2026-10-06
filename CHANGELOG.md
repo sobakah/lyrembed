@@ -3,6 +3,100 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.5.0] — 2026-10-06
+
+Search results now have to fit the track, instrumental tracks are recognised,
+several actions run over many tracks at once, NetEase finds songs again with
+fewer requests, and synced lyrics rank first.
+
+### Fixed
+
+* **NetEase returned only unrelated songs.** Its `/api/search/get` endpoint
+  answers anonymous clients with popular filler, which the new result filter
+  hid, so NetEase looked empty. The default is now `/api/search/pc`, which
+  returns the right songs for the same queries. Checked on P1Harmony's *DUH!*:
+  NetEase now has synced lyrics for five of six tracks, before for none. A
+  config that sets `api.netease_search_url` to `…/api/search/get` should drop
+  the key.
+* **NetEase throttling went unnoticed.** Filler answers and refusals (code
+  -462) are now reported as provider notices; `R` retries.
+* **Unrelated results filled the list.** NetEase answers a search without good
+  hits with popular songs, and when no result matched the artist, lrckit
+  listed all of them - often a page of Chinese pop for an instrumental track.
+  The title is now checked as well as the artist (for a title in another
+  language, the length counts instead), and results that do not fit are
+  hidden behind `u` and marked `≠artist` / `≠title`. Their lyrics are not even
+  fetched from NetEase any more. Checked live: *Opening* by Studio Ghibli
+  Orchestra listed nine Chinese pop songs, now none; *Blueming* and *LOVE
+  SCENARIO* are still found and picked automatically.
+* **NetEase's instrumental notice was listed as lyrics.** `纯音乐，请欣赏`
+  ("pure music, please enjoy") showed up as Chinese lyrics.
+* **The sung version was offered for instrumental tracks.** LRCLIB's exact
+  lookup ignores `(Inst.)` and returned the vocal *Blueming* for *Blueming
+  (Inst.)*, highlighted for Enter. Version notes now count, also for exact
+  matches.
+
+### Added
+
+* Alias P1Harmony = 피원하모니.
+* **Instrumental tracks are recognised** before and during the search: by a
+  version note in the title (`(Inst.)`, `- Instrumental`, `(Off Vocal)`,
+  `(MR)`, `(Karaoke)`, `オフボーカル`, `伴奏` …), by the language tag `zxx`,
+  by LRCLIB's `instrumental` and NetEase's `pureMusic` flags, and optionally
+  by MusicBrainz (`api.enable_musicbrainz`, off by default) for files with a
+  MusicBrainz recording ID. A `♪` notice says why; batch mode and the bulk
+  fetch skip such tracks, without searching when the tags already say so.
+* **Bulk actions** (`a` in the tree overview) for all tracks or a selection
+  such as `1-5,8`: fetch lyrics for tracks without, romanize the embedded
+  lyrics (detected script, `romanization_layout`), write `.lrc` sidecars, and
+  delete lyrics. Replaced lyrics and overwritten sidecars are backed up first.
+* **About 200 built-in artist alias groups** in `lrckit/aliases.json`, up from
+  11: K-pop groups and soloists, Japanese and Chinese artists, soundtrack
+  composers, and spellings with and without diacritics. `--list-aliases`
+  prints every group in effect.
+* `config.example.json` explains every setting next to it, and says that it
+  is a reference lrckit does not read. Keys starting with `_` are comments in
+  any config file.
+
+### Changed
+
+* **Synced lyrics rank above plain ones**, also above LRCLIB's exact match
+  when that has plain lyrics only. Such an exact match used to lead the list
+  and be what Enter saved, while synced versions of the same song sat further
+  down. After a search, Enter now saves the entry batch mode would pick
+  (synced, artist and title fit, length within tolerance); only without one
+  an exact match on top. `settings.prefer_synced: false` restores the old
+  order. Checked on P1Harmony's *DUH!*, *Flashy* and *Work*: the synced
+  version is on top and highlighted, the plain one below.
+* **Enter saves.** In the inspection view Enter applies the lyrics (`y` still
+  works), and "Save changes?" / "Save romanized lyrics?" default to yes.
+  Delete and discard prompts still default to no.
+* **Searches go in rounds.** LRCLIB and NetEase are asked first with the
+  tag's artist only. The artist's aliases and the `syncedlyrics` engine
+  follow only when that finds no synced lyrics that fit, and never for
+  instrumental tracks. `a` in the search results searches the aliases on
+  demand; `settings.search_all_aliases` and `api.syncedlyrics_as_fallback`
+  bring back the old behaviour.
+* **Fewer requests.** NetEase searches run one after another, and lyrics are
+  fetched for at most the three best-fitting songs. LRCLIB gets four queries
+  instead of six: the `Romanized` query found nothing new in a test of eight
+  tracks, and the exact lookup without duration only runs when the one with
+  duration fails. `syncedlyrics` no longer queries LRCLIB and NetEase a second
+  time (`api.syncedlyrics_providers`).
+* Provider labels are upper case: `[NETEASE]`, and `[SYNCEDLYRICS]` instead of
+  the unclear `[MULTI]`.
+* **`settings.prefer_latin` is off by default**, and off now leaves the script
+  out of the ranking instead of preferring the original.
+* **Your `aliases` extend the built-in groups** instead of replacing all of
+  them; a group sharing a name with a built-in one is merged into it.
+* Romanizing with the `below` layout twice no longer doubles the lines.
+
+### Upgrading from 0.4.x
+
+* To keep romanized results first, set `"prefer_latin": true`.
+* If your config has an `aliases` list that copied the old built-in groups,
+  you can remove the copies; `lrckit --list-aliases` shows what is in effect.
+
 ## [0.4.0] — 2026-10-05
 
 ### Fixed
@@ -343,6 +437,7 @@ LRCLIB, NetEase and `syncedlyrics`; confidence-aware ranking; batch mode with
   time. Traditional Chinese resolves less often than simplified for this
   reason.
 
+[0.5.0]: https://github.com/sobakah/lyrembed/releases/tag/0.5.0
 [0.4.0]: https://github.com/sobakah/lyrembed/releases/tag/0.4.0
 [0.3.0]: https://github.com/sobakah/lyrembed/releases/tag/0.3.0
 [0.2.0]: https://github.com/sobakah/lyrembed/releases/tag/0.2.0

@@ -114,9 +114,8 @@ def _contains_alias(haystack: str, needle: str) -> bool:
     return bool(_word_pattern(needle.lower()).search(haystack.lower()))
 
 
-def _alias_groups() -> list[list[str]]:
-    groups = config.CONFIG.get("aliases", [])
-    return [g for g in groups if isinstance(g, list)] if isinstance(groups, list) else []
+def _alias_groups():
+    return config.alias_groups()
 
 
 def get_artist_aliases(artist: str) -> list[str]:
@@ -158,6 +157,63 @@ def matches_artist(target_artist: str, candidate_artist: str) -> bool:
     # Require a clear majority of the shorter name, not a single stray token:
     # "Red Velvet" must not match "The Velvet Underground".
     return len(overlap) / min(len(target_words), len(candidate_words)) > 0.5
+
+
+# --- title matching ----------------------------------------------------------
+# Version notes that mean "no vocals". MR ("music recorded") is the Korean
+# term; it must not be followed by a dot, or "(Mr. Big Cover)" would count.
+_INSTRUMENTAL_WORDS = re.compile(
+    r"(?<!\w)(?:inst\.?|instrumental|off[\s-]?vocal|karaoke|backing\s+track|"
+    r"minus\s+one|mr(?![\w.]))(?!\w)",
+    re.IGNORECASE,
+)
+# Japanese and Chinese markers, recognised anywhere in the title.
+_INSTRUMENTAL_CJK = re.compile(r"オフボーカル|インスト|カラオケ|伴奏|纯音乐|純音樂")
+_TITLE_NOTES = re.compile(r"[\(\[（【]([^\)\]）】]*)[\)\]）】]|\s[-–]\s(.+)$")
+
+
+def instrumental_marker(title: str) -> str | None:
+    """The version note that marks *title* as instrumental, if any.
+
+    Latin words only count inside brackets or after ' - ', where version notes
+    live: a song may well be called 'Instrumental Love' or 'Karaoke Night'.
+    """
+    if not title:
+        return None
+    cjk = _INSTRUMENTAL_CJK.search(title)
+    if cjk:
+        return cjk.group(0)
+    for match in _TITLE_NOTES.finditer(title):
+        note = match.group(1) or match.group(2) or ""
+        word = _INSTRUMENTAL_WORDS.search(note)
+        if word:
+            return word.group(0)
+    return None
+
+
+def _title_words(title: str) -> list[str]:
+    """Lower-case words of a title without features, bracketed notes and
+    ' - Remastered'-style suffixes, which providers write inconsistently."""
+    core = re.sub(r"\s[-–]\s.*$", "", _strip_brackets(clean_tag(title)))
+    words = re.findall(r"\w+", core.casefold())
+    return words or re.findall(r"\w+", (title or "").casefold())
+
+
+def matches_title(target_title: str, candidate_title: str) -> bool:
+    """Whether two titles name the same song, apart from version notes.
+
+    Unknown titles count as matching. Translated titles ('사랑을 했다' vs
+    'LOVE SCENARIO') do not match; callers accept those on a matching
+    duration instead.
+    """
+    target, candidate = _title_words(target_title), _title_words(candidate_title)
+    if not target or not candidate:
+        return True
+    joined_t, joined_c = " ".join(target), " ".join(candidate)
+    if joined_t == joined_c or _contains_alias(joined_t, joined_c) or _contains_alias(joined_c, joined_t):
+        return True
+    overlap = set(target) & set(candidate)
+    return len(overlap) / min(len(set(target)), len(set(candidate))) > 0.5
 
 
 # --- script detection --------------------------------------------------------
@@ -683,8 +739,9 @@ def romanize_lyrics(lyrics: str, lang: str, han_default: str = "zh",
             return romanize_mixed_segment(segment, han_default, trust_ja)
         return romanize_single_segment(segment, lang)
 
+    lines = lyrics.splitlines()
     converted = []
-    for line in lyrics.splitlines():
+    for index, line in enumerate(lines):
         match = TIMESTAMP_REGEX.match(line)
         if match:
             result = f"{match.group(1)}{convert(match.group(2))}"
@@ -692,6 +749,10 @@ def romanize_lyrics(lyrics: str, lang: str, han_default: str = "zh",
             result = convert(line)
         if keep_original and result != line:
             converted.append(line)
+            # Already followed by its romanization (romanized before with this
+            # layout): adding it again would double every line.
+            if index + 1 < len(lines) and lines[index + 1] == result:
+                continue
         converted.append(result)
     return "\n".join(converted)
 

@@ -2,14 +2,14 @@
 
 Vibecoded interactive CLI utility for Linux, macOS and Windows to search, inspect, romanize and embed synchronized (`.lrc`) and plain lyrics into FLAC, MP3, OGG Vorbis, Opus and M4A files with a focus on east asian music.
 
-Version 0.4.0 · Python 3.10+ · MIT
+Version 0.5.0 · Python 3.10+ · MIT
 
 ---
 
 ## Features
 
 * **Multi-format tagging** — FLAC, MP3, OGG Vorbis, Opus and M4A, plus optional companion `.lrc` sidecar files.
-* **Concurrent multi-provider search** — LRCLIB, NetEase Cloud Music and the optional `syncedlyrics` engine are queried in parallel on a pooled HTTP session with retry and backoff.
+* **Concurrent multi-provider search** — LRCLIB and NetEase Cloud Music are queried in parallel on a pooled HTTP session with retry and backoff; the optional `syncedlyrics` engine (Musixmatch, Megalobiz, Genius) and the artist's aliases follow only when that finds no synced lyrics.
 * **Exact-match lookups** — LRCLIB's `/get` endpoint is queried with title, artist, album and duration; fuzzy `/search` queries run alongside as a fallback.
 * **Confidence-aware ranking** — ordered by exact match, synchronization, script preference and duration agreement.
 * **Smart tag cleaning & aliases** — strips features (`feat. …`), filters localized bracketed subtitles out of queries, and resolves group acronyms (*Tomorrow X Together* ↔ *TXT*) with word-boundary matching.
@@ -97,6 +97,7 @@ lrckit ~/Music/Artist --auto --dry-run
 | `path` | Music directory (default: current directory) |
 | `--version` | Print the version and exit |
 | `-c`, `--config FILE` | Use this config file instead of the search paths; an unusable file is an error |
+| `--list-aliases` | Print the artist alias groups in effect (built-in and your own) and exit |
 | `--max-files N` | Scan at most `N` files, `0` for no limit (overrides `settings.max_file_count`) |
 | `--auto` | Batch mode: tag confident matches without prompting |
 | `--overwrite` | With `--auto`, also replace existing lyrics; the old ones are backed up to `$XDG_STATE_HOME/lrckit/backups/<time>/` (default `~/.local/state/…`) |
@@ -115,7 +116,18 @@ Exit codes: `0` success or quit, `1` some files failed in batch mode, `2` unusab
 
 ## Keybindings
 
-**Tree overview (entry screen)** — `1`–`N` jump to track · `Enter` start with the first · `c` change directory · `q` quit
+**Tree overview (entry screen)** — `1`–`N` jump to track · `Enter` start with the first · `a` bulk actions · `c` change directory · `q` quit
+
+**Bulk actions** (`a` in the tree overview) run one action over all tracks or a selection such as `1-5,8`, without asking per track:
+
+| Key | Action |
+|---|---|
+| `1` | Fetch lyrics for tracks without lyrics — the same confident-match rules as `--auto` |
+| `2` | Romanize embedded lyrics: detected script per track, Han characters read as Chinese unless the context says Japanese, layout from `settings.romanization_layout`. Latin lyrics and lyrics romanized before are skipped |
+| `3` | Write `.lrc` sidecars from the embedded lyrics |
+| `4` | Delete embedded lyrics (asks once), optionally with their sidecars |
+
+Lyrics that `2` or `4` replace, and sidecars that `3` overwrites, are backed up to `$XDG_STATE_HOME/lrckit/backups/<time>/` first. Ctrl+C stops the run; the remaining tracks are left untouched.
 
 **Search results**
 
@@ -125,15 +137,28 @@ Exit codes: `0` success or quit, `1` some files failed in batch mode, `2` unusab
 | `1`–`N` | Inspect and select a candidate |
 | `m` | Adjust the search query (pre-filled) |
 | `R` | Repeat the search, bypassing the cache |
+| `u` | Show / hide results for other titles or artists — offered only when some were hidden |
+| `a` | Search again with the artist's aliases too — offered when they were not searched yet |
 | `Ctrl+C` | While searching: cancel the search and stay on the track |
 | `n` | Create lyrics from scratch in your editor |
 | `p` / `s` | Previous / next track |
 | `t` | Back to the tree overview |
 | `q` | Quit |
 
-`✓exact` marks a record LRCLIB returned as a direct match rather than a search hit; the duration column shows separately whether the length was verified (`Duration OK` / `±Ns`), or just the candidate's own length when the track's length is unknown. `?unverified` marks `syncedlyrics` results, which carry no artist or title to check against. NetEase results may come in a second variant marked `user romanization` — the romanized lyrics NetEase users submitted.
+`✓exact` marks a record LRCLIB returned as a direct match rather than a search hit; the duration column shows separately whether the length was verified (`Duration OK` / `±Ns`), or just the candidate's own length when the track's length is unknown. `[SYNCEDLYRICS]` results come from the `syncedlyrics` engine, which tries Musixmatch, Megalobiz and Genius (`api.syncedlyrics_providers`) and returns bare text; `?unverified` marks them, since they carry no artist or title to check against. By default the engine only runs when LRCLIB and NetEase find no synced lyrics that fit (`api.syncedlyrics_as_fallback`). NetEase results may come in a second variant marked `user romanization` — the romanized lyrics NetEase users submitted.
 
-The entry `Enter` would save is marked `▶` and named in full above the menu — the exact match after a search, or the one you last inspected.
+Only results that fit the track are listed: the artist must match (aliases included), and the title too — or, for a title in another language such as `사랑을 했다` vs `LOVE SCENARIO`, the length. The rest is hidden behind `u` and marked `≠artist` / `≠title` when shown; NetEase in particular pads searches without good hits with unrelated popular songs, whose lyrics are not even fetched; it does the same when it throttles a client that sent too many requests, which lrckit then reports as a provider notice (`R` retries). To stay below that limit, NetEase gets one search at a time and at most three lyrics requests per round. Version notes count: the sung version is no match for `Song (Inst.)`, even as LRCLIB's exact match.
+
+**Instrumental tracks.** A `♪` notice says when a track probably has no lyrics, and why:
+
+* the title carries a version note such as `(Inst.)`, `- Instrumental`, `(Off Vocal)`, `(MR)`, `(Karaoke)`, `オフボーカル`, `伴奏`;
+* the language tag is `zxx` ("no lyrics", written by MusicBrainz Picard);
+* LRCLIB marks the track's record as instrumental, or NetEase marks it as `pureMusic` (its "lyrics" are then only the notice `纯音乐，请欣赏`, which is no longer listed);
+* with `api.enable_musicbrainz`, MusicBrainz says so for the file's recording ID (tagged by Picard): an instrumental performance, or a work whose lyrics language is "no lyrics". Its data is incomplete, so silence there means nothing.
+
+Batch mode and the bulk fetch skip such tracks and report them as instrumental; tracks recognised by their tags are not even searched.
+
+The entry `Enter` would save is marked `▶` and named in full above the menu — after a search the one batch mode would pick (synced, artist and title fit, length within tolerance), otherwise an exact match on top; later the one you last inspected. Synced lyrics are listed above plain ones, even above LRCLIB's exact match when that has plain lyrics only (`settings.prefer_synced`).
 
 **Inspection** (candidate or manual entry)
 
@@ -142,7 +167,7 @@ The entry `Enter` would save is marked `▶` and named in full above the menu �
 | `v` | Full preview (all lines) |
 | `e` | Open in your editor |
 | `r` | Romanize (detected script offered as default) |
-| `y` | Apply and embed |
+| `Enter` | Apply and embed (`y` works too) |
 | `b` | Back to the candidate list (cached, no new requests) |
 | `q` | Quit |
 
@@ -205,15 +230,15 @@ User values are merged **recursively** over the built-in defaults, so a file wit
 ```json
 {
   "settings": {
-    "prefer_latin": false,
+    "prefer_latin": true,
     "write_sidecar_lrc": true
   }
 }
 ```
 
-An invalid file found on the search paths produces a warning and the defaults are used; a file given with `--config` must be valid, or the run stops. Values of the wrong type and unknown keys (typos) are reported, and the default is used for them. `config.example.json` contains every key with its default value — copy only what you want to change.
+An invalid file found on the search paths produces a warning and the defaults are used; a file given with `--config` must be valid, or the run stops. Values of the wrong type and unknown keys (typos) are reported, and the default is used for them. `config.example.json` is a reference, not a config: lrckit never reads it. It lists every key with its default value and, in the `_key` entry above it, what the key does. Copy only what you want to change into your own file. Keys starting with `_` are treated as comments, so copying a block with its explanations works too.
 
-**`aliases`** — groups of equivalent artist spellings, matched at word boundaries.
+**`aliases`** — your own groups of names for the same artist, e.g. `[["Hoshino Gen", "星野源"]]`. They are added to the about 200 built-in groups in [`lrckit/aliases.json`](lrckit/aliases.json) (K-pop groups and soloists, Japanese, Chinese, and spellings with and without diacritics); a group sharing a name with a built-in one is merged into it. Aliases let a result filed under another name count as the right artist, and add searches under the other names: by default only when the tag's artist finds no synced lyrics that fit, or when you press `a` in the search results; with `settings.search_all_aliases` always. Names match whole words, ignoring case. `lrckit --list-aliases` prints every group in effect.
 
 **`cleaning`** — `feature_regex`, `trailing_feature_regex` and the `korean_`/`japanese_`/`chinese_bracket_regex` patterns removed from search queries, plus `ignore_words_artist_match`. Set `strip_all_brackets` to `true` to drop everything in `(…)` and `[…]` from title, artist and album before searching — useful when tags list individual members behind the group, as in `Group ("Member A", "Member B")`. It also drops parts such as `(Live)` or `[Remastered]`; a title or artist written entirely in brackets is searched as it is.
 
@@ -221,7 +246,7 @@ An invalid file found on the search paths produces a warning and the defaults ar
 
 | Key | Meaning |
 |---|---|
-| `lrclib_url`, `netease_search_url`, `netease_lyric_url` | Provider endpoints. NetEase's former `/api/search/get/web` now answers encrypted; a config still naming it gets a provider notice |
+| `lrclib_url`, `netease_search_url`, `netease_lyric_url` | Provider endpoints. NetEase's `/api/search/pc` is the default: `/api/search/get` (used up to 0.4.0) answers anonymous clients with unrelated popular songs, and the older `/api/search/get/web` answers encrypted |
 | `timeout_seconds` | Per-request timeout |
 | `netease_search_limit` | Results requested per NetEase query |
 | `user_agent` | Sent to LRCLIB; identify your fork by name, version and URL. Defaults to the current version, so leave it out unless you change it |
@@ -229,8 +254,12 @@ An invalid file found on the search paths produces a warning and the defaults ar
 | `retry_total`, `retry_backoff` | Automatic retries on 429 and 5xx |
 | `duration_tolerance_seconds` | Maximum length difference accepted by `--auto` |
 | `syncedlyrics_timeout_seconds` | How long to wait for the `syncedlyrics` engine, which has no timeout of its own |
+| `syncedlyrics_as_fallback` | `true` (default) runs the engine only when LRCLIB and NetEase find no synced lyrics that fit; `false` with every search |
+| `syncedlyrics_providers` | The engine's sources, default `["Musixmatch", "Megalobiz", "Genius"]`. LRCLIB and NetEase are left out because lrckit asks them itself; `[]` allows all |
 | `batch_delay_seconds` | Pause between tracks in `--auto` mode |
 | `enable_lrclib`, `enable_netease`, `enable_syncedlyrics` | Turn individual providers off |
+| `enable_musicbrainz` | `true` asks MusicBrainz whether a track is instrumental, for files with a MusicBrainz recording ID. Off by default: one extra request per track, at most one per second |
+| `musicbrainz_url` | MusicBrainz API base URL |
 
 **`settings`**
 
@@ -243,11 +272,13 @@ An invalid file found on the search paths produces a warning and the defaults ar
 | `max_search_depth` | Directory levels to descend. `3` collects files up to three levels below the start directory; deeper directories are not entered. |
 | `max_file_count` | Abort the scan above this many files and ask for a narrower path; `0` for no limit |
 | `search_cache_entries` | How many past searches to keep in memory for the session |
-| `prefer_latin` | `true` ranks romanized versions first; `false` prefers the original script |
+| `prefer_synced` | `true` (default) ranks synced lyrics above plain ones, also above an exact match with plain lyrics only; `false` puts the exact match first |
+| `prefer_latin` | `true` ranks romanized versions first; `false` (default) leaves the script out of the ranking |
 | `sort_by_tags` | `true` orders by disc/track number; `false` uses natural filename order (`Track 2` before `Track 10`) |
 | `write_sidecar_lrc` | Also write a companion `.lrc` next to each track |
 | `id3_v2_version` | ID3v2 version for MP3s that have no tag yet: `4` (default) or `3` for players that only read ID3v2.3. Existing tags keep their version |
 | `uslt_language` | ISO-639-2 code stored in the MP3 `USLT` frame |
+| `search_all_aliases` | `true` searches every alias of the artist right away. `false` (default) searches the tag's artist first and the aliases only when that finds no synced lyrics that fit, or on `a` — each alias costs several more requests |
 | `prefer_album_artist` | `true` searches with the album artist instead of the track artist, for tags that list every member or guest per track. Compilations (`Various Artists`) and tracks without an album artist keep the track artist |
 | `romanization_layout` | What Enter picks at the romanization layout prompt: `replace` (default) or `below` to keep the original line with the romanized one below it |
 | `color` | `auto`, `always` or `never` |
@@ -277,6 +308,7 @@ lrckit/
   providers.py           LRCLIB / NetEase / syncedlyrics, ranking
   tagging.py             Metadata reading, writing, caching
   text.py                Tag cleaning, artist matching, romanization
+  aliases.json           Built-in artist alias groups
   editor.py              External editor handling
   ui.py                  Colours, prompts, previews, path completion
   config.py              Defaults and recursive config merging

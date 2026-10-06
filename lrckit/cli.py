@@ -21,6 +21,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("path", nargs="?", default=".", help="music directory (default: current directory)")
     parser.add_argument("--version", action="version", version=f"lrckit {__version__}")
     parser.add_argument("-c", "--config", type=Path, metavar="FILE", help="use this config file instead of the search paths")
+    parser.add_argument("--list-aliases", action="store_true",
+                        help="print the artist alias groups in effect and where they come from, then exit")
     parser.add_argument("--max-files", type=int, metavar="N",
                         help="scan at most N files (0 = unlimited; default: settings.max_file_count)")
 
@@ -62,6 +64,18 @@ def configure_logging(verbosity: int) -> None:
     logging.basicConfig(level=level, format="%(levelname)s %(name)s: %(message)s", stream=sys.stderr)
 
 
+def print_aliases() -> None:
+    """Show the alias groups in effect: the built-in file plus the user's."""
+    builtin = config.builtin_aliases()
+    user = config.CONFIG.get("aliases") or []
+    groups = config.alias_groups()
+    print(f"Built-in: {len(builtin)} groups from {config.builtin_aliases_path()}")
+    print(f"Yours:    {len(user)} groups from {config.CONFIG.get('_source', 'built-in defaults')}")
+    print(f"In effect: {len(groups)} groups\n")
+    for group in groups:
+        print("  " + " = ".join(group))
+
+
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     configure_logging(args.verbose)
@@ -87,6 +101,9 @@ def main(argv: list[str] | None = None) -> int:
 
     for message in warnings:
         ui.warn(f"Warning: {message}")
+    if args.list_aliases:
+        print_aliases()
+        return 0
     unsupported = sorted(
         {str(e).lower() for e in config.get("settings", "supported_extensions") or []}
         - set(tagging.SUPPORTED_EXTENSIONS)

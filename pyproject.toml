@@ -38,6 +38,9 @@ lrckit = "lrckit.cli:main"
 [tool.setuptools]
 packages = ["lrckit"]
 
+[tool.setuptools.package-data]
+lrckit = ["aliases.json"]
+
 [tool.setuptools.dynamic]
 # Single source of truth; read statically, the package is not imported.
 version = { attr = "lrckit.config.__version__" }
