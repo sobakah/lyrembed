@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "lrckit"
+name = "lyrembed"
 dynamic = ["version"]
 description = "Interactive CLI to search, romanize and embed synchronized lyrics into audio files"
 readme = "README.md"
@@ -33,14 +33,14 @@ all = [
 dev = ["pytest>=7", "pyflakes>=3"]
 
 [project.scripts]
-lrckit = "lrckit.cli:main"
+lyrembed = "lyrembed.cli:main"
 
 [tool.setuptools]
-packages = ["lrckit"]
+packages = ["lyrembed"]
 
 [tool.setuptools.package-data]
-lrckit = ["aliases.json"]
+lyrembed = ["aliases.json"]
 
 [tool.setuptools.dynamic]
 # Single source of truth; read statically, the package is not imported.
-version = { attr = "lrckit.config.__version__" }
+version = { attr = "lyrembed.config.__version__" }

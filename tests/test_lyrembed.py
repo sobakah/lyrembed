@@ -1,4 +1,4 @@
-"""Regression tests for lrckit."""
+"""Regression tests for lyrembed."""
 
 import os
 import re
@@ -9,9 +9,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lrckit import config, editor, providers, tagging, text  # noqa: E402
-from lrckit import app, ui  # noqa: E402
-from lrckit.app import natural_key  # noqa: E402
+from lyrembed import config, editor, providers, tagging, text  # noqa: E402
+from lyrembed import app, ui  # noqa: E402
+from lyrembed.app import natural_key  # noqa: E402
 
 
 # --- config merging ----------------------------------------------------------
@@ -757,7 +757,7 @@ import shutil  # noqa: E402
 import subprocess  # noqa: E402
 import time  # noqa: E402
 
-from lrckit import cli  # noqa: E402
+from lyrembed import cli  # noqa: E402
 
 
 @pytest.fixture
@@ -783,12 +783,14 @@ def _scripted_input(monkeypatch, answers):
 
 # launcher
 def test_launcher_explains_a_missing_package(tmp_path):
-    # Named lrckit.py, the launcher imported itself when lrckit/ was missing
+    # Named lyrembed.py, the launcher imported itself when lyrembed/ was missing
     # and the explanation below was unreachable.
     launcher = tmp_path / "run.py"
     shutil.copy(Path(__file__).resolve().parent.parent / "run.py", launcher)
     (tmp_path / "cli.py").write_text("", encoding="utf-8")
-    result = subprocess.run([sys.executable, str(launcher)], capture_output=True, text=True)
+    # -S -I: an installed lyrembed (pip install -e, PYTHONPATH) must not be found
+    # instead of the missing sibling package.
+    result = subprocess.run([sys.executable, "-S", "-I", str(launcher)], capture_output=True, text=True)
     assert result.returncode == 2
     assert "package was not found" in result.stderr
     assert "mv cli.py" in result.stderr
@@ -802,7 +804,7 @@ def test_project_url_is_not_a_placeholder():
 # config
 def test_user_config_comes_before_a_checkout_config(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    assert config.config_search_paths()[0] == tmp_path / "lrckit" / "config.json"
+    assert config.config_search_paths()[0] == tmp_path / "lyrembed" / "config.json"
 
 
 def test_wrong_types_fall_back_to_defaults(tmp_path):
@@ -873,7 +875,7 @@ def test_user_aliases_extend_and_merge_with_the_builtin_ones(cfg):
 
 
 def test_list_aliases_prints_the_groups_in_effect(cfg, capsys, monkeypatch, tmp_path):
-    from lrckit import cli
+    from lyrembed import cli
 
     user = tmp_path / "config.json"
     user.write_text('{"aliases": [["Some Band", "어떤 밴드"]]}', encoding="utf-8")
@@ -884,7 +886,8 @@ def test_list_aliases_prints_the_groups_in_effect(cfg, capsys, monkeypatch, tmp_
 
 # command line
 def test_batch_only_flags_require_auto(capsys):
-    for argv in (["--dry-run"], ["--overwrite"], ["--sidecar", "--no-sidecar"], ["--max-files", "-1"]):
+    for argv in (["--dry-run"], ["--overwrite"], ["--sidecar", "--no-sidecar"], ["--max-files", "-1"],
+                 ["--romanize"], ["--no-romanize"], ["--auto", "--romanize", "--no-romanize"]):
         with pytest.raises(SystemExit) as raised:
             cli.parse_args(argv)
         assert raised.value.code == 2, argv
@@ -1446,6 +1449,69 @@ def test_lrclib_instrumental_flag_is_reported(cfg, monkeypatch):
     assert report.instrumental == {"LRCLIB": "exact match"}
 
 
+def test_instrumental_version_does_not_flag_the_sung_track(cfg, monkeypatch):
+    # An album with both '1&Only' and '1&Only (Inst.)': the instrumental's
+    # record matched the sung title once version notes were ignored.
+    records = [
+        {"id": 1, "trackName": "1&Only (Inst.)", "artistName": "XLOV", "duration": 200,
+         "instrumental": True, "plainLyrics": None, "syncedLyrics": None},
+        {"id": 2, "trackName": "1&Only", "artistName": "XLOV", "duration": 200,
+         "instrumental": False, "plainLyrics": "la", "syncedLyrics": "[00:01.00]la"},
+    ]
+
+    class FakeResponse:
+        status_code = 200
+        reason = "OK"
+
+        def __init__(self, url):
+            self.url = url
+
+        def json(self):
+            return records[1] if self.url.endswith("/get") else records
+
+    class FakeSession:
+        def get(self, url, params=None, timeout=None, headers=None):
+            return FakeResponse(url)
+
+    monkeypatch.setattr(providers, "get_session", lambda: FakeSession())
+    report = providers.SearchReport()
+    found = providers.query_lrclib("1&Only", "XLOV", "", 200, report)
+    assert report.instrumental == {}
+    assert [c.title for c in found] == ["1&Only"]
+
+    report = providers.SearchReport()
+    providers.query_lrclib("1&Only (instrumental)", "XLOV", "", 200, report)
+    assert report.instrumental == {"LRCLIB": "1&Only (Inst.)"}
+
+
+def test_netease_pure_music_of_another_version_is_ignored(cfg, monkeypatch):
+    song = {"id": 7, "name": "1&Only (Inst.)", "artists": [{"name": "XLOV"}],
+            "album": {"name": "I ONE"}, "duration": 200000}
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload):
+            self.payload = payload
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return self.payload
+
+    class FakeSession:
+        def get(self, url, params=None, timeout=None, headers=None):
+            if "lyric" in url:
+                return FakeResponse({"pureMusic": True, "lrc": {"lyric": "[00:05.00]纯音乐，请欣赏"}})
+            return FakeResponse({"result": {"songs": [song]}})
+
+    monkeypatch.setattr(providers, "get_session", lambda: FakeSession())
+    report = providers.SearchReport()
+    providers.query_netease("1&Only", "XLOV", 200, report)
+    assert report.instrumental == {}
+
+
 def test_netease_pure_music_is_flagged_not_listed(cfg, monkeypatch):
     song = {"id": 7, "name": "Merry Christmas Mr. Lawrence", "artists": [{"name": "坂本龍一"}],
             "album": {"name": "A"}, "duration": 347000}
@@ -1767,7 +1833,7 @@ def test_syncedlyrics_runs_only_when_the_first_round_falls_short(cfg, monkeypatc
     assert sorted(rounds) == [("lrclib", "none"), ("syncedlyrics", "none")]
 
 
-def test_syncedlyrics_skips_the_sources_lrckit_asks_itself(cfg, monkeypatch):
+def test_syncedlyrics_skips_the_sources_lyrembed_asks_itself(cfg, monkeypatch):
     seen = []
 
     class FakeEngine:
@@ -1795,3 +1861,89 @@ def test_enter_saves_edited_lyrics(cfg, tmp_path, monkeypatch):
     meta = tagging.read_metadata(track)
     assert app.manage_existing_lyrics(meta, tagging.MetadataCache()) is app.Action.NEXT
     assert tagging.read_metadata(track).lyrics == "[00:01.00]new"
+
+
+def test_enter_on_a_result_can_open_its_preview_first(cfg, monkeypatch, capsys):
+    synced = _built(provider="LRCLIB", artist="A", title="Song", duration=200)
+    _fake_providers(monkeypatch, [synced])
+    meta = tagging.TrackMeta(path=Path("x.flac"), title="Song", artist="A", duration=200)
+
+    _scripted_input(monkeypatch, [""])                     # default: saves at once
+    assert app.select_lyrics(meta, providers.SearchCache()) == (app.Action.APPLY, synced.text)
+
+    cfg["settings"]["enter_opens_preview"] = True
+    _scripted_input(monkeypatch, ["", "b", "s"])           # Enter = inspect, b = back
+    assert app.select_lyrics(meta, providers.SearchCache()) == (app.Action.NEXT, None)
+    out = capsys.readouterr().out
+    assert "[Enter] Inspect #1" in out and "Apply these lyrics" in out
+
+
+def test_config_from_before_the_rename_is_still_read(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
+    legacy = tmp_path / "lrckit" / "config.json"
+    legacy.parent.mkdir()
+    legacy.write_text('{"settings": {"preview_lines": 5}}', encoding="utf-8")
+    merged, warnings = config.load_config(None)
+    assert merged["settings"]["preview_lines"] == 5
+    assert any("move it to" in w and "lyrembed" in w for w in warnings)
+
+    current = tmp_path / "lyrembed" / "config.json"
+    current.parent.mkdir()
+    current.write_text('{"settings": {"preview_lines": 7}}', encoding="utf-8")
+    merged, warnings = config.load_config(None)
+    assert merged["settings"]["preview_lines"] == 7 and warnings == []
+
+
+# batch romanization
+def _batch_track(tmp_path: Path, monkeypatch, text_found: str) -> Path:
+    """A taggable FLAC whose automatic search finds text_found."""
+    from mutagen.flac import FLAC
+
+    path = _make_flac(tmp_path / "track.flac")
+    audio = FLAC(path)
+    audio["title"], audio["artist"] = "Love wins all", "IU"
+    audio.save()
+    found = _cand(synced=True, exact=True, text=text_found)
+    monkeypatch.setattr(app, "find_automatic",
+                        lambda meta: (providers.SearchReport(candidates=[found]), found))
+    return path
+
+
+@pytest.mark.skipif(not text.HAS_KOREAN, reason="korean-romanizer not installed")
+def test_batch_romanizes_only_when_asked(cfg, tmp_path, monkeypatch, capsys):
+    from mutagen.flac import FLAC
+
+    path = _batch_track(tmp_path, monkeypatch, "[00:01.00]사랑해")
+    assert app.run_batch([path], tmp_path, tagging.MetadataCache(), False, False) == 0
+    assert FLAC(path)["LYRICS"] == ["[00:01.00]사랑해"]  # off by default
+
+    path.unlink()
+    path = _batch_track(tmp_path, monkeypatch, "[00:01.00]사랑해")
+    cfg["settings"]["auto_romanize"] = True
+    cfg["settings"]["romanization_layout"] = "below"
+    assert app.run_batch([path], tmp_path, tagging.MetadataCache(), False, False) == 0
+    saved = FLAC(path)["LYRICS"][0]
+    assert saved.startswith("[00:01.00]사랑해") and "saranghae" in saved  # original kept, line below
+    assert ", romanized" in capsys.readouterr().out
+
+
+def test_batch_romanization_reports_a_missing_backend(cfg, tmp_path, monkeypatch, capsys):
+    from mutagen.flac import FLAC
+
+    path = _batch_track(tmp_path, monkeypatch, "[00:01.00]사랑해")
+    cfg["settings"]["auto_romanize"] = True
+    monkeypatch.setattr(app, "auto_romanize", lambda lyrics: (None, "'korean-romanizer' is not installed"))
+    assert app.run_batch([path], tmp_path, tagging.MetadataCache(), False, False) == 0
+    assert FLAC(path)["LYRICS"] == ["[00:01.00]사랑해"]  # still tagged, as found
+    assert "not romanized: 'korean-romanizer' is not installed" in capsys.readouterr().out
+
+
+def test_romanize_flags_override_the_setting(cfg, tmp_path, monkeypatch):
+    user = tmp_path / "config.json"
+    user.write_text('{"settings": {"auto_romanize": true}}', encoding="utf-8")
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    cli.main([str(empty), "--auto", "--no-romanize", "-c", str(user), "--color", "never"])
+    assert config.get("settings", "auto_romanize") is False
+    cli.main([str(empty), "--auto", "-c", str(user), "--color", "never"])
+    assert config.get("settings", "auto_romanize") is True

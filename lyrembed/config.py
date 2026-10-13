@@ -13,8 +13,8 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-__version__ = "0.5.0"
-PROJECT_URL = "https://github.com/sobakah/lrckit"
+__version__ = "0.6.0"
+PROJECT_URL = "https://github.com/sobakah/lyrembed"
 
 DEFAULT_CONFIG: dict[str, Any] = {
     # Extra groups from the user; the built-in ones live in aliases.json.
@@ -34,7 +34,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "netease_lyric_url": "https://music.163.com/api/song/lyric",
         "timeout_seconds": 6,
         "netease_search_limit": 6,
-        "user_agent": f"lrckit/{__version__} ({PROJECT_URL})",
+        "user_agent": f"lyrembed/{__version__} ({PROJECT_URL})",
         "max_workers": 8,
         "retry_total": 2,
         "retry_backoff": 0.3,
@@ -59,11 +59,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "search_cache_entries": 64,
         "prefer_latin": False,
         "prefer_synced": True,
+        "enter_opens_preview": False,
         "sort_by_tags": False,
         "write_sidecar_lrc": False,
         "id3_v2_version": 4,
         "uslt_language": "eng",
         "romanization_layout": "replace",
+        "auto_romanize": False,
         "prefer_album_artist": False,
         "search_all_aliases": False,
         "color": "auto",
@@ -74,7 +76,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
 SETTING_HELP: dict[str, Any] = {
     "aliases": (
         "Your own artist alias groups, added to the built-in ones in "
-        "lrckit/aliases.json (groups sharing a name are merged). Each group lists "
+        "lyrembed/aliases.json (groups sharing a name are merged). Each group lists "
         "names of one artist, e.g. [[\"Hoshino Gen\", \"星野源\"]]."
     ),
     "cleaning": {
@@ -106,7 +108,7 @@ SETTING_HELP: dict[str, Any] = {
         ),
         "syncedlyrics_providers": (
             "Sources syncedlyrics may use, in its own order. LRCLIB and NetEase are left out because "
-            "lrckit asks them directly; [] lets syncedlyrics use all of its sources."
+            "lyrembed asks them directly; [] lets syncedlyrics use all of its sources."
         ),
         "batch_delay_seconds": "Pause between tracks in batch mode, to go easy on LRCLIB.",
         "enable_lrclib": "Search LRCLIB.",
@@ -128,11 +130,20 @@ SETTING_HELP: dict[str, Any] = {
         "search_cache_entries": "Searches kept in memory per session.",
         "prefer_latin": "true ranks romanized lyrics first; false leaves the script out of the ranking.",
         "prefer_synced": "true ranks synced lyrics above plain ones, even above an exact match with plain lyrics only.",
+        "enter_opens_preview": (
+            "true makes Enter on the highlighted search result open its preview and options, "
+            "like typing its number; false (default) saves it right away."
+        ),
         "sort_by_tags": "true sorts by disc/track number, false by file name.",
         "write_sidecar_lrc": "Also write a .lrc file next to each track.",
         "id3_v2_version": "ID3v2 version (3 or 4) for MP3s without a tag; existing tags keep theirs.",
         "uslt_language": "Three-letter language code stored with MP3 lyrics.",
         "romanization_layout": "What Enter picks after romanizing: \"replace\" or \"below\" (keep the original line).",
+        "auto_romanize": (
+            "true romanizes the lyrics batch mode (--auto) embeds: detected script, layout from "
+            "romanization_layout, Latin lyrics left alone. --romanize / --no-romanize override it "
+            "for one run."
+        ),
         "prefer_album_artist": "true searches with the album artist instead of the track artist.",
         "search_all_aliases": (
             "true searches every alias of the artist right away. false (default) searches the "
@@ -143,13 +154,13 @@ SETTING_HELP: dict[str, Any] = {
 }
 
 EXAMPLE_ABOUT = [
-    "lrckit does NOT read this file. It lists every setting with its built-in default.",
-    "To change settings, create ~/.config/lrckit/config.json (or pass --config FILE)",
+    "lyrembed does NOT read this file. It lists every setting with its built-in default.",
+    "To change settings, create ~/.config/lyrembed/config.json (or pass --config FILE)",
     "with only the keys you want to change; everything else keeps its default. Example:",
     "{ \"settings\": { \"prefer_latin\": true }, \"cleaning\": { \"strip_all_brackets\": true } }",
     "Keys starting with an underscore, like this one, are comments and ignored.",
-    "Built-in artist aliases are in lrckit/aliases.json; add your own under \"aliases\".",
-    "lrckit --list-aliases shows every alias group in effect.",
+    "Built-in artist aliases are in lyrembed/aliases.json; add your own under \"aliases\".",
+    "lyrembed --list-aliases shows every alias group in effect.",
 ]
 
 
@@ -195,7 +206,7 @@ def builtin_aliases_path():
 
 @lru_cache(maxsize=1)
 def builtin_aliases() -> tuple[tuple[str, ...], ...]:
-    """The groups in lrckit/aliases.json, read once.
+    """The groups in lyrembed/aliases.json, read once.
 
     Kept in a data file rather than in code, so what is in effect can be read
     and extended without reading Python.
@@ -260,12 +271,22 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
-def config_search_paths() -> list[Path]:
-    """The user's config comes first; a ``config.json`` in a source checkout
-    is still honoured after it, for setups that predate the XDG location."""
+def _config_home() -> Path:
     xdg = os.environ.get("XDG_CONFIG_HOME")
-    config_home = Path(xdg) if xdg else Path.home() / ".config"
-    paths = [config_home / "lrckit" / "config.json"]
+    return Path(xdg) if xdg else Path.home() / ".config"
+
+
+def legacy_config_path() -> Path:
+    """Where the config lived while the project was called lrckit."""
+    return _config_home() / "lrckit" / "config.json"
+
+
+def config_search_paths() -> list[Path]:
+    """The user's config comes first, then the one from the lrckit days, so an
+    existing setup keeps working after the rename (load_config says to move
+    it). A ``config.json`` in a source checkout is still honoured last, for
+    setups that predate the XDG location."""
+    paths = [_config_home() / "lyrembed" / "config.json", legacy_config_path()]
     checkout = Path(__file__).resolve().parent.parent
     if (checkout / "pyproject.toml").is_file():
         paths.append(checkout / "config.json")
@@ -356,6 +377,9 @@ def load_config(explicit_path: Path | None = None) -> tuple[dict, list[str]]:
             continue
         merged = _deep_merge(DEFAULT_CONFIG, loaded)
         warnings += _validate(merged, loaded, path)
+        if path == legacy_config_path():
+            warnings.append(f"{path} is the config location from before the rename to lyrembed; "
+                            f"move it to {config_search_paths()[0]}.")
         merged["_source"] = str(path)
         return merged, warnings
 

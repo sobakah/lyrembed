@@ -10,6 +10,6 @@ dist/
 # Personal config in a checkout; the template is config.example.json
 /config.json
 
-# Personal notes kept outside the repo (~/Software/Claude/Projects/lrckit)
+# Personal notes kept outside the repo (~/Software/Claude/Projects/lyrembed)
 /COMMIT_MSG*.txt
 /RELEASE_NOTES*.md

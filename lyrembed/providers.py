@@ -251,6 +251,15 @@ def _cleaned(raw: str) -> str:
     return clean_tag(raw) or (raw or "").strip()
 
 
+def _same_version(searched: str, record_title: str) -> bool:
+    """Whether a provider record's instrumental flag can speak for the searched
+    track. matches_title ignores version notes, so '1&Only (Inst.)' would match
+    '1&Only' and mark the sung track instrumental when an album has both."""
+    if (instrumental_marker(searched) is None) != (instrumental_marker(record_title) is None):
+        return False
+    return matches_title(searched, record_title)
+
+
 def query_lrclib(title: str, artist: str, album: str, duration: int, report: SearchReport,
                  quick: bool = False, aliases: str = "none") -> list[Candidate]:
     if not config.get("api", "enable_lrclib", True):
@@ -319,7 +328,7 @@ def query_lrclib(title: str, artist: str, album: str, duration: int, report: Sea
             # fuzzy /search hit may be another song's instrumental.
             if endpoint == "get":
                 report.mark_instrumental("LRCLIB", "exact match")
-            elif (matches_title(clean_t, item.get("trackName") or "")
+            elif (_same_version(clean_t, item.get("trackName") or "")
                   and matches_artist(clean_a, item.get("artistName") or "")):
                 report.mark_instrumental("LRCLIB", item.get("trackName") or "")
             continue
@@ -466,7 +475,7 @@ def query_netease(title: str, artist: str, duration: int, report: SearchReport,
                 # counts for a song with this title by this artist - or, as
                 # artist names are often in another script, of this length.
                 close = bool(duration and song_duration and abs(song_duration - duration) <= _tolerance())
-                if matches_title(clean_t, song.get("name") or "") and (matches_artist(clean_a, artist_names) or close):
+                if _same_version(clean_t, song.get("name") or "") and (matches_artist(clean_a, artist_names) or close):
                     report.mark_instrumental("NetEase", song.get("name") or "")
                 continue
             if not lyric.strip():

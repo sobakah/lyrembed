@@ -4,13 +4,13 @@ Guidance for Claude Code working in this repository.
 
 ## What this is
 
-`lrckit` is an interactive terminal program that searches, inspects, romanizes
+`lyrembed` is an interactive terminal program that searches, inspects, romanizes
 and embeds synchronized (`.lrc`) and plain lyrics into FLAC, MP3, OGG Vorbis,
 Opus and M4A files. Python 3.10+, no runtime framework.
 
 ```
 run.py                   Launcher for checkouts (thin wrapper)
-lrckit/
+lyrembed/
   cli.py                 Argument parsing, config loading, start-up
   app.py                 Directory scanning, navigation, menus, batch mode
   providers.py           LRCLIB / NetEase / syncedlyrics, ranking, search cache
@@ -20,15 +20,15 @@ lrckit/
   ui.py                  Colours, prompts, previews, menus, path completion
   config.py              Defaults, setting explanations, config merging, alias loading
   aliases.json           Built-in artist alias groups (package data)
-tests/test_lrckit.py     pytest suite
+tests/test_lyrembed.py     pytest suite
 ```
 
 ## Commands
 
 ```bash
 pip install -e ".[all,dev]"     # all optional backends plus pytest/pyflakes
-pytest -q                       # 147 tests; 18 skip without the optional backends
-python -m pyflakes lrckit/ tests/ run.py
+pytest -q                       # 154 tests; 19 skip without the optional backends
+python -m pyflakes lyrembed/ tests/ run.py
 python run.py --version
 python run.py ~/Music/Album --auto --dry-run --color never
 ```
@@ -111,15 +111,15 @@ are reported as provider notices, never silently dropped. The search endpoint is
 only (checked 2026-10-06 - same query, filler there, the right song on `pc`).
 The syncedlyrics engine runs in the second round too, and never with its own
 LRCLIB/NetEase sources (`api.syncedlyrics_providers`), which duplicated
-lrckit's requests.
+lyrembed's requests.
 
 **Provider results are merged across concurrent responses.** `/get` and
 `/search` often return the same LRCLIB record. Attributes derived from which
 endpoint answered — currently `exact` — must be merged, not taken from
 whichever future finished first, or the flag flips between runs.
 
-**The launcher must not be named `lrckit.py`.** With the package directory
-missing, `import lrckit` would import the launcher itself, and its
+**The launcher must not be named `lyrembed.py`.** With the package directory
+missing, `import lyrembed` would import the launcher itself, and its
 explanation of the expected layout became unreachable. Hence `run.py`;
 `test_launcher_explains_a_missing_package` covers it.
 
@@ -184,12 +184,16 @@ Commit messages and release notes do not belong in the repository. They are
 drafted in a notes folder outside the checkout (`COMMIT_MSG_<version>.txt`,
 `RELEASE_NOTES_<version>.md`); ask the maintainer where if it is not known.
 The repo's `.gitignore` excludes them should one be created here by mistake.
-Release tags carry no `v` prefix and always have three parts (`0.2.0`,
-`0.3.0`), like the version itself.
+Release tags carry no `v` prefix and always have three parts (`0.9.0`,
+`1.0.0`), like the version itself.
+
+The project was called fetchlyrics (0.1.0) and lrckit (0.2.0 to 0.5.0).
+It was renamed to lyrembed in 0.6.0 because `lrc-kit` exists on PyPI;
+`config.legacy_config_path` keeps reading the old config location.
 
 A version bump touches two places:
 
-1. `lrckit/config.py` — `__version__` (`pyproject.toml` reads it via
+1. `lyrembed/config.py` — `__version__` (`pyproject.toml` reads it via
    `[tool.setuptools.dynamic]`, and `api.user_agent` is derived from it)
 2. `README.md` — the version line under the title
 
@@ -202,11 +206,11 @@ The example tests fail until you do. Keep any documented key in sync with the
 README table.
 
 ```bash
-python -c "from pathlib import Path; from lrckit import config; config.write_example(Path('config.example.json'))"
+python -c "from pathlib import Path; from lyrembed import config; config.write_example(Path('config.example.json'))"
 ```
 
-Built-in artist aliases live in `lrckit/aliases.json`, not in code, so that
-what is in effect can be read (`lrckit --list-aliases`). Every name must be
+Built-in artist aliases live in `lyrembed/aliases.json`, not in code, so that
+what is in effect can be read (`lyrembed --list-aliases`). Every name must be
 unambiguous: not an ordinary word, not shared by several artists, not inside
 another group's name (`Mayday` would join *Mayday Parade* with 五月天).
 `test_builtin_aliases_are_unambiguous` checks the last two. User groups from

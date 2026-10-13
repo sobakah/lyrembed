@@ -3,6 +3,55 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.6.0] — 2026-10-13
+
+lrckit is now called **lyrembed**: the name lrckit was already taken on
+PyPI by `lrc-kit`, a lyrics parser.
+
+### Added
+
+* **Romanization in batch mode.** `settings.auto_romanize` makes `--auto`
+  romanize the lyrics it embeds, the same way the bulk action does: the
+  script is detected per song, the layout comes from
+  `settings.romanization_layout`, and Latin or already romanized lyrics are
+  embedded as they are. Off by default. `--romanize` and `--no-romanize`
+  override the setting for one run. If a romanization package is missing,
+  the track is still tagged with the lyrics as found, and the batch output
+  says why they were not romanized.
+* **`settings.enter_opens_preview`** makes Enter on the highlighted search
+  result open its preview and options first, like typing its number, instead
+  of saving at once. Off by default.
+
+### Changed
+
+* **Renamed to lyrembed.** The command, the Python package and the paths
+  follow: `lyrembed` instead of `lrckit`, `~/.config/lyrembed/config.json`,
+  and backups in `~/.local/state/lyrembed/backups/`. The repository moved to
+  <https://github.com/sobakah/lyrembed>; GitHub forwards the old address.
+
+### Fixed
+
+* **Albums with sung and instrumental versions of the same song.** Searching
+  for `1&Only` also finds the record of `1&Only (Inst.)`, which LRCLIB flags
+  as instrumental. Because version notes were ignored when comparing titles,
+  that flag was applied to the sung track, and the interactive view reported
+  it as instrumental. NetEase's instrumental flag had the same flaw. A flag
+  now counts only when the record and the track agree on being an
+  instrumental version.
+
+### Upgrading from lrckit
+
+* Install under the new name and remove the old command:
+
+  ```bash
+  pipx uninstall lrckit
+  pipx install "lyrembed[all] @ git+https://github.com/sobakah/lyrembed.git"
+  ```
+
+* Move `~/.config/lrckit/config.json` to `~/.config/lyrembed/config.json`.
+  Until then the old file is still read, with a reminder at start-up.
+* Backups made by lrckit stay in `~/.local/state/lrckit/backups/`.
+
 ## [0.5.0] — 2026-10-06
 
 Search results now have to fit the track, instrumental tracks are recognised,
@@ -437,6 +486,7 @@ LRCLIB, NetEase and `syncedlyrics`; confidence-aware ranking; batch mode with
   time. Traditional Chinese resolves less often than simplified for this
   reason.
 
+[0.6.0]: https://github.com/sobakah/lyrembed/releases/tag/0.6.0
 [0.5.0]: https://github.com/sobakah/lyrembed/releases/tag/0.5.0
 [0.4.0]: https://github.com/sobakah/lyrembed/releases/tag/0.4.0
 [0.3.0]: https://github.com/sobakah/lyrembed/releases/tag/0.3.0

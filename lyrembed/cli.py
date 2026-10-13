@@ -14,12 +14,12 @@ from .tagging import MetadataCache
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="lrckit",
+        prog="lyrembed",
         description="Search, inspect, romanize and embed synchronized and plain lyrics "
                     "in FLAC, MP3, OGG Vorbis, Opus and M4A files.",
     )
     parser.add_argument("path", nargs="?", default=".", help="music directory (default: current directory)")
-    parser.add_argument("--version", action="version", version=f"lrckit {__version__}")
+    parser.add_argument("--version", action="version", version=f"lyrembed {__version__}")
     parser.add_argument("-c", "--config", type=Path, metavar="FILE", help="use this config file instead of the search paths")
     parser.add_argument("--list-aliases", action="store_true",
                         help="print the artist alias groups in effect and where they come from, then exit")
@@ -30,6 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--auto", action="store_true", help="tag every track with a confident match, without prompting")
     batch.add_argument("--overwrite", action="store_true", help="in --auto mode, also replace existing lyrics (backed up first)")
     batch.add_argument("--dry-run", action="store_true", help="in --auto mode, report what would change and write nothing")
+    romanize = batch.add_mutually_exclusive_group()
+    romanize.add_argument("--romanize", action="store_true", default=None,
+                          help="in --auto mode, romanize the lyrics it embeds (default: settings.auto_romanize)")
+    romanize.add_argument("--no-romanize", dest="romanize", action="store_false",
+                          help="in --auto mode, embed the lyrics as found")
 
     output = parser.add_argument_group("output")
     output.add_argument("--color", choices=("auto", "always", "never"), help="override colour handling")
@@ -46,7 +51,9 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     # Silently ignoring these would let a user believe --overwrite took effect.
     if not args.auto:
-        given = [flag for flag, on in (("--overwrite", args.overwrite), ("--dry-run", args.dry_run)) if on]
+        given = [flag for flag, on in (("--overwrite", args.overwrite), ("--dry-run", args.dry_run),
+                                       ("--romanize" if args.romanize else "--no-romanize",
+                                        args.romanize is not None)) if on]
         if given:
             verb = "apply" if len(given) > 1 else "applies"
             parser.error(f"{' and '.join(given)} only {verb} together with --auto")
@@ -95,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         settings["write_sidecar_lrc"] = False
     if args.max_files is not None:
         settings["max_file_count"] = args.max_files
+    if args.romanize is not None:
+        settings["auto_romanize"] = args.romanize
 
     config.set_config(loaded)
     ui.apply_color_settings()

@@ -1,14 +1,14 @@
 {
   "_about": [
-    "lrckit does NOT read this file. It lists every setting with its built-in default.",
-    "To change settings, create ~/.config/lrckit/config.json (or pass --config FILE)",
+    "lyrembed does NOT read this file. It lists every setting with its built-in default.",
+    "To change settings, create ~/.config/lyrembed/config.json (or pass --config FILE)",
     "with only the keys you want to change; everything else keeps its default. Example:",
     "{ \"settings\": { \"prefer_latin\": true }, \"cleaning\": { \"strip_all_brackets\": true } }",
     "Keys starting with an underscore, like this one, are comments and ignored.",
-    "Built-in artist aliases are in lrckit/aliases.json; add your own under \"aliases\".",
-    "lrckit --list-aliases shows every alias group in effect."
+    "Built-in artist aliases are in lyrembed/aliases.json; add your own under \"aliases\".",
+    "lyrembed --list-aliases shows every alias group in effect."
   ],
-  "_aliases": "Your own artist alias groups, added to the built-in ones in lrckit/aliases.json (groups sharing a name are merged). Each group lists names of one artist, e.g. [[\"Hoshino Gen\", \"星野源\"]].",
+  "_aliases": "Your own artist alias groups, added to the built-in ones in lyrembed/aliases.json (groups sharing a name are merged). Each group lists names of one artist, e.g. [[\"Hoshino Gen\", \"星野源\"]].",
   "aliases": [],
   "cleaning": {
     "_feature_regex": "Removes '(feat. X)' / '[ft. X]' from titles and artists before searching.",
@@ -56,7 +56,7 @@
     "syncedlyrics_timeout_seconds": 15,
     "_syncedlyrics_as_fallback": "true runs the syncedlyrics scrapers only when LRCLIB and NetEase find no synced lyrics that fit; false runs them with every search.",
     "syncedlyrics_as_fallback": true,
-    "_syncedlyrics_providers": "Sources syncedlyrics may use, in its own order. LRCLIB and NetEase are left out because lrckit asks them directly; [] lets syncedlyrics use all of its sources.",
+    "_syncedlyrics_providers": "Sources syncedlyrics may use, in its own order. LRCLIB and NetEase are left out because lyrembed asks them directly; [] lets syncedlyrics use all of its sources.",
     "syncedlyrics_providers": [
       "Musixmatch",
       "Megalobiz",
@@ -100,6 +100,8 @@
     "prefer_latin": false,
     "_prefer_synced": "true ranks synced lyrics above plain ones, even above an exact match with plain lyrics only.",
     "prefer_synced": true,
+    "_enter_opens_preview": "true makes Enter on the highlighted search result open its preview and options, like typing its number; false (default) saves it right away.",
+    "enter_opens_preview": false,
     "_sort_by_tags": "true sorts by disc/track number, false by file name.",
     "sort_by_tags": false,
     "_write_sidecar_lrc": "Also write a .lrc file next to each track.",
@@ -110,6 +112,8 @@
     "uslt_language": "eng",
     "_romanization_layout": "What Enter picks after romanizing: \"replace\" or \"below\" (keep the original line).",
     "romanization_layout": "replace",
+    "_auto_romanize": "true romanizes the lyrics batch mode (--auto) embeds: detected script, layout from romanization_layout, Latin lyrics left alone. --romanize / --no-romanize override it for one run.",
+    "auto_romanize": false,
     "_prefer_album_artist": "true searches with the album artist instead of the track artist.",
     "prefer_album_artist": false,
     "_search_all_aliases": "true searches every alias of the artist right away. false (default) searches the tag's artist first and the aliases only when that finds no synced lyrics, or on 'a'.",

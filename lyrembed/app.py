@@ -215,10 +215,10 @@ def save_lyrics(path: Path, lyrics: str, prefix: str = "") -> bool:
 
 
 def backup_directory() -> Path:
-    """A fresh per-run folder under $XDG_STATE_HOME/lrckit/backups."""
+    """A fresh per-run folder under $XDG_STATE_HOME/lyrembed/backups."""
     state = os.environ.get("XDG_STATE_HOME")
     root = Path(state) if state else Path.home() / ".local" / "state"
-    return root / "lrckit" / "backups" / datetime.now().strftime("%Y%m%d-%H%M%S")
+    return root / "lyrembed" / "backups" / datetime.now().strftime("%Y%m%d-%H%M%S")
 
 
 def backup_lyrics(backup_root: Path, base_dir: Path, path: Path, lyrics: str) -> Path:
@@ -670,8 +670,10 @@ def select_lyrics(meta: TrackMeta, cache: providers.SearchCache) -> tuple[Action
         confirmable = candidates[highlight - 1] if highlight and highlight <= len(candidates) else None
 
         upper = len(candidates) if candidates else 1
+        preview_on_enter = bool(config.get("settings", "enter_opens_preview", False))
         if confirmable is not None:
-            print_primary_action("Enter", f"Save {describe_candidate(highlight, confirmable)}")
+            verb = "Inspect" if preview_on_enter else "Save"
+            print_primary_action("Enter", f"{verb} {describe_candidate(highlight, confirmable)}")
         print_menu([
             ("Lyrics", ([(f"1-{upper}", "Inspect and select")] if candidates else []) + [
                 ("m", "Adjust search query"),
@@ -684,6 +686,10 @@ def select_lyrics(meta: TrackMeta, cache: providers.SearchCache) -> tuple[Action
 
         choice = safe_input(f"{StyleUI.BOLD}Selection: {StyleUI.RESET}").strip()
         lowered = choice.lower()
+
+        if choice == "" and confirmable is not None and preview_on_enter:
+            # Same as typing the entry's number: preview and options first.
+            choice = lowered = str(highlight)
 
         if choice == "" and confirmable is not None:
             success(f"Selected {describe_candidate(highlight, confirmable)}")
@@ -824,7 +830,9 @@ def find_automatic(meta: TrackMeta) -> tuple[SearchReport, Candidate | None]:
 
 def run_batch(files: list[Path], base_dir: Path, cache: MetadataCache,
               overwrite: bool, dry_run: bool) -> int:
-    print_banner(f"Batch mode ({len(files)} files){' - dry run' if dry_run else ''}")
+    romanize = bool(config.get("settings", "auto_romanize", False))
+    print_banner(f"Batch mode ({len(files)} files){', romanizing' if romanize else ''}"
+                 f"{' - dry run' if dry_run else ''}")
     applied = skipped = failed = 0
     delay = max(0.0, float(config.get("api", "batch_delay_seconds", 1.0)))
     backup_root = backup_directory() if overwrite and not dry_run else None
@@ -877,9 +885,18 @@ def run_batch(files: list[Path], base_dir: Path, cache: MetadataCache,
             continue
 
         position = report.candidates.index(candidate) + 1
+        lyrics, note = candidate.text, ""
+        if romanize:
+            # Same conversion as the bulk action; lyrics that need none (Latin,
+            # romanized before) are embedded as they are without comment.
+            romanized, reason = auto_romanize(lyrics)
+            if romanized is not None:
+                lyrics, note = romanized, ", romanized"
+            elif reason not in ("already Latin", "already romanized"):
+                note = f" (not romanized: {reason})"
         if dry_run:
             print(f"{StyleUI.CYAN}{prefix}: would apply "
-                  f"{describe_candidate(position, candidate)}.{StyleUI.RESET}")
+                  f"{describe_candidate(position, candidate)}{note}.{StyleUI.RESET}")
             applied += 1
             continue
 
@@ -893,12 +910,12 @@ def run_batch(files: list[Path], base_dir: Path, cache: MetadataCache,
                 continue
             backed_up += 1
 
-        if not save_lyrics(path, candidate.text, prefix=prefix):
+        if not save_lyrics(path, lyrics, prefix=prefix):
             failed += 1
             continue
 
         cache.invalidate(path)
-        success(f"{prefix}: tagged with {describe_candidate(position, candidate)}.")
+        success(f"{prefix}: tagged with {describe_candidate(position, candidate)}{note}.")
         applied += 1
 
     print_banner("Batch summary")
