@@ -3,6 +3,95 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.0] — 2026-10-15
+
+### Added
+
+* **QQ Music** as a third provider, searched together with LRCLIB and
+  NetEase. Its catalogue is strong in Chinese, Korean and Japanese music,
+  and it often has synced lyrics when the others do not or are
+  unavailable. It follows NetEase's rules: one search at a time, lyrics
+  for at most three fitting songs. Its instrumental notice marks a track
+  as instrumental, and its credit lines and opening `Title - Artist` line
+  are removed, also when the song's name carries a version note, such as
+  `Lemon (Live)` with the line `Lemon - 米津玄師`.
+  `api.enable_qqmusic` turns it off.
+* **Megalobiz** as a fourth provider, through its public API. Users sync
+  lyrics there themselves: often several versions of one song, also for
+  little-known songs, of varying quality. It is only asked when LRCLIB,
+  NetEase and QQ Music find no synced lyrics that fit, because its free
+  limits are small (30 requests a minute, 1,000 a day; an optional
+  `api.megalobiz_api_key` raises them). After a refusal it is skipped
+  until the limit resets, without holding up a batch run. When you
+  inspect its lyrics, their Megalobiz page is shown.
+* **QQ Music and Megalobiz lyrics start with the lyrics.** The header tags
+  both put above them (`[ti:]`, `[ar:]`, `[al:]`, `[by:]`, `[length:]`,
+  `[re:]`, QQ Music's long `[kana:]` reading list) are removed; the file's
+  own tags already hold that information. A non-zero `[offset:]` stays,
+  since it shifts the timing.
+
+### Changed
+
+* **Gentler on LRCLIB's rate limit.** LRCLIB now often refuses requests
+  with HTTP 429 (Too Many Requests). lyrembed sent no more requests than
+  before, but made a limit worse:
+  * A refused request is no longer retried automatically; each retry
+    counted against the limit again. Server errors (5xx) are still retried.
+  * After a refusal, the remaining LRCLIB queries for the track are not
+    sent, and later search rounds skip LRCLIB. NetEase and syncedlyrics
+    carry on. The refusal is shown as a provider notice.
+  * Batch mode waits after a refused track (at least 10 seconds or what
+    LRCLIB asks for, doubling while the limit persists, at most 2 minutes)
+    and tries the track once more instead of skipping it.
+  * At most two LRCLIB requests run at the same time, instead of all of a
+    track's queries at once (up to eleven with aliases).
+  * Batch mode's full search reuses the result of the quick `/get` lookup
+    instead of sending it again: two requests fewer per track that the
+    quick lookup does not settle.
+* **`api.syncedlyrics_providers` defaults to Musixmatch and Genius**;
+  Megalobiz is now asked directly. As of October 2026 neither source
+  answers through syncedlyrics 1.0.1: Musixmatch returns the same
+  unrelated songs for every search, Genius refuses the requests.
+* **Configuration values are checked for range, not only type.** Values
+  that cannot work, such as `max_workers: 0` (which silently switched
+  LRCLIB off), a negative `preview_lines` or an unknown `color`, are
+  reported and replaced by the default. An `aliases` entry that is not a
+  list of names, such as a flat `["BTS", "Bangtan Boys"]`, is reported
+  instead of being dropped silently.
+* **The tree overview continues where you were.** After `t`, Enter goes
+  back to the current track instead of starting over at track 1.
+* **Search results stay cached after saving.** Choosing "search online"
+  on a track tagged in the same session shows the earlier results without
+  new requests.
+* **An editor closed right away without changes** is shown as a note
+  ("No changes"), not as an error. The hint about GUI editors without a
+  wait flag stays.
+
+### Fixed
+
+* **Identical lyrics from several uploads** no longer depend on which
+  request finished first. The upload that fits the track best is kept: a
+  cover with the same text no longer hides the original, and a fuzzy hit
+  no longer hides LRCLIB's exact match.
+* **An instrumental version no longer fits a sung track by its length.**
+  `BIZNESS (纯音乐)` was listed for `BIZNESS` because both are equally
+  long; the length only vouches for a title in another language.
+* **The middle dot `・`** in Chinese and Korean lyrics no longer makes them
+  count as Japanese: they were marked `[MIXED]`, and Han characters next
+  to the dot were romanized with Japanese readings. `ー` counts as Kana
+  only next to Kana.
+* **Romanized lines below the original** no longer duplicate lines that
+  needed no romanization but contained double or trailing spaces, nor LRC
+  headers such as `[al:]`.
+* **Tab completion** of the folder prompt works in folders with spaces in
+  their names, and with a quoted path.
+* **In the menu for embedded lyrics**, closing the editor without changes
+  after an unsaved romanization no longer asks "Save changes?" again.
+* **An instrumental note in Japanese or Chinese brackets** (`(インスト)`,
+  `(伴奏)`) now counts when a provider's instrumental flag is checked, and
+  tracks whose titles are entirely bracketed no longer share cached search
+  results.
+
 ## [0.6.0] — 2026-10-13
 
 lrckit is now called **lyrembed**: the name lrckit was already taken on
@@ -486,6 +575,7 @@ LRCLIB, NetEase and `syncedlyrics`; confidence-aware ranking; batch mode with
   time. Traditional Chinese resolves less often than simplified for this
   reason.
 
+[0.7.0]: https://github.com/sobakah/lyrembed/releases/tag/0.7.0
 [0.6.0]: https://github.com/sobakah/lyrembed/releases/tag/0.6.0
 [0.5.0]: https://github.com/sobakah/lyrembed/releases/tag/0.5.0
 [0.4.0]: https://github.com/sobakah/lyrembed/releases/tag/0.4.0

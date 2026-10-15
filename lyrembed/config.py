@@ -13,7 +13,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 PROJECT_URL = "https://github.com/sobakah/lyrembed"
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -32,6 +32,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "lrclib_url": "https://lrclib.net/api",
         "netease_search_url": "https://music.163.com/api/search/pc",
         "netease_lyric_url": "https://music.163.com/api/song/lyric",
+        "qqmusic_search_url": "https://c.y.qq.com/soso/fcgi-bin/client_search_cp",
+        "qqmusic_lyric_url": "https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg",
+        "megalobiz_url": "https://api.megalobiz.com/api/public/v1",
+        "megalobiz_api_key": "",
         "timeout_seconds": 6,
         "netease_search_limit": 6,
         "user_agent": f"lyrembed/{__version__} ({PROJECT_URL})",
@@ -41,10 +45,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "duration_tolerance_seconds": 2,
         "syncedlyrics_timeout_seconds": 15,
         "syncedlyrics_as_fallback": True,
-        "syncedlyrics_providers": ["Musixmatch", "Megalobiz", "Genius"],
+        "syncedlyrics_providers": ["Musixmatch", "Genius"],
         "batch_delay_seconds": 1.0,
         "enable_lrclib": True,
         "enable_netease": True,
+        "enable_qqmusic": True,
+        "enable_megalobiz": True,
         "enable_syncedlyrics": True,
         "enable_musicbrainz": False,
         "musicbrainz_url": "https://musicbrainz.org/ws/2",
@@ -95,24 +101,36 @@ SETTING_HELP: dict[str, Any] = {
         "lrclib_url": "LRCLIB API base URL.",
         "netease_search_url": "NetEase search endpoint.",
         "netease_lyric_url": "NetEase lyrics endpoint.",
+        "qqmusic_search_url": "QQ Music search endpoint.",
+        "qqmusic_lyric_url": "QQ Music lyrics endpoint.",
+        "megalobiz_url": "Megalobiz public API base URL.",
+        "megalobiz_api_key": (
+            "Optional free key from megalobiz.com/developers: raises its limits from 30 requests a "
+            "minute and 1,000 a day per IP."
+        ),
         "timeout_seconds": "Timeout per HTTP request.",
-        "netease_search_limit": "How many NetEase songs to fetch lyrics for per search.",
+        "netease_search_limit": "How many NetEase search results to consider; lyrics are fetched for the best three.",
         "max_workers": "Parallel requests per search.",
         "retry_total": "Retries for failed requests.",
         "retry_backoff": "Backoff factor between retries, in seconds.",
         "duration_tolerance_seconds": "Allowed length difference for a confident (automatic) match.",
         "syncedlyrics_timeout_seconds": "How long to wait for the syncedlyrics scrapers.",
         "syncedlyrics_as_fallback": (
-            "true runs the syncedlyrics scrapers only when LRCLIB and NetEase find no synced "
+            "true runs the syncedlyrics scrapers only when LRCLIB, NetEase and QQ Music find no synced "
             "lyrics that fit; false runs them with every search."
         ),
         "syncedlyrics_providers": (
-            "Sources syncedlyrics may use, in its own order. LRCLIB and NetEase are left out because "
+            "Sources syncedlyrics may use, in its own order. LRCLIB, NetEase and Megalobiz are left out because "
             "lyrembed asks them directly; [] lets syncedlyrics use all of its sources."
         ),
         "batch_delay_seconds": "Pause between tracks in batch mode, to go easy on LRCLIB.",
         "enable_lrclib": "Search LRCLIB.",
         "enable_netease": "Search NetEase.",
+        "enable_qqmusic": "Search QQ Music (strong for Chinese, Korean and Japanese music).",
+        "enable_megalobiz": (
+            "Search Megalobiz (community-synced lyrics, often several versions) when the first "
+            "providers find no synced lyrics that fit."
+        ),
         "enable_syncedlyrics": "Search via syncedlyrics (needs the optional package).",
         "enable_musicbrainz": (
             "true asks MusicBrainz whether a track is instrumental, for files tagged with a "
@@ -293,6 +311,50 @@ def config_search_paths() -> list[Path]:
     return paths
 
 
+# Values of the right type can still be unusable: max_workers 0 silently
+# turned LRCLIB off, a negative preview_lines cut lines off the end.
+_MINIMUMS: dict[tuple[str, str], float] = {
+    ("api", "timeout_seconds"): 1,
+    ("api", "netease_search_limit"): 1,
+    ("api", "max_workers"): 1,
+    ("api", "retry_total"): 0,
+    ("api", "retry_backoff"): 0,
+    ("api", "duration_tolerance_seconds"): 0,
+    ("api", "syncedlyrics_timeout_seconds"): 1,
+    ("api", "batch_delay_seconds"): 0,
+    ("settings", "preview_lines"): 1,
+    ("settings", "non_latin_ratio_threshold"): 0,
+    ("settings", "max_search_depth"): 0,
+    ("settings", "max_file_count"): 0,
+    ("settings", "search_cache_entries"): 1,
+}
+_CHOICES: dict[tuple[str, str], tuple] = {
+    ("settings", "color"): ("auto", "always", "never", "on", "off", "true", "false", "1", "0"),
+    ("settings", "romanization_layout"): ("replace", "below"),
+    ("settings", "id3_v2_version"): (3, 4),
+}
+
+
+def _out_of_range(section: str, key: str, value: Any) -> str | None:
+    """Why a value of the right type cannot be used, or None."""
+    minimum = _MINIMUMS.get((section, key))
+    if minimum is not None and value < minimum:
+        return f"must be at least {minimum}"
+    choices = _CHOICES.get((section, key))
+    if choices is not None:
+        normalized = value.lower() if isinstance(value, str) else value
+        if normalized not in choices:
+            return "must be one of " + ", ".join(repr(c) for c in choices)
+    return None
+
+
+def _invalid_alias_groups(groups: list) -> list[str]:
+    """A flat list ["BTS", "Bangtan Boys"] instead of a list of groups used to
+    be dropped without a word by alias_groups()."""
+    return [repr(group) for group in groups
+            if not (isinstance(group, list) and all(isinstance(name, str) for name in group))]
+
+
 def _matches_type(value: Any, default: Any) -> bool:
     if isinstance(default, bool):
         return isinstance(value, bool)
@@ -323,6 +385,14 @@ def _validate(merged: dict, user: dict, source: Path) -> list[str]:
             warnings.append(f"{source}: '{section}' has the wrong type, using the defaults.")
             merged[section] = copy.deepcopy(default_section)
             continue
+        if section == "aliases":
+            invalid = _invalid_alias_groups(values)
+            if invalid:
+                warnings.append(
+                    f"{source}: 'aliases' must be a list of groups such as "
+                    f"[[\"BTS\", \"Bangtan Boys\"]]; ignoring {', '.join(invalid)}."
+                )
+            continue
         if not isinstance(default_section, dict):
             continue
         for key, value in values.items():
@@ -332,6 +402,12 @@ def _validate(merged: dict, user: dict, source: Path) -> list[str]:
                 expected = type(default_section[key]).__name__
                 warnings.append(
                     f"{source}: '{section}.{key}' should be of type {expected}, "
+                    f"using the default {default_section[key]!r}."
+                )
+                merged[section][key] = copy.deepcopy(default_section[key])
+            elif (problem := _out_of_range(section, key, value)) is not None:
+                warnings.append(
+                    f"{source}: '{section}.{key}' {problem}, "
                     f"using the default {default_section[key]!r}."
                 )
                 merged[section][key] = copy.deepcopy(default_section[key])

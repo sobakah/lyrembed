@@ -20,6 +20,12 @@ class EditorError(Exception):
     """Raised when the configured editor cannot be launched."""
 
 
+class EditorReturnedAtOnce(EditorError):
+    """The editor closed within a second without changes: a terminal editor
+    quit right away, or a GUI editor that did not wait for the file. Not an
+    error in the first case, so callers show it as a note."""
+
+
 def editor_command() -> list[str]:
     """Split $VISUAL or $EDITOR into argv.
 
@@ -68,8 +74,8 @@ def open_editor(initial_content: str) -> str:
         with open(temp_path, "r", encoding="utf-8", errors="replace") as fh:
             edited = fh.read()
         if edited == initial_content and elapsed < _DETACHED_EDITOR_SECONDS:
-            raise EditorError(
-                f"Editor '{argv[0]}' returned after {elapsed:.1f}s without changes. "
+            raise EditorReturnedAtOnce(
+                f"No changes (the editor '{argv[0]}' closed after {elapsed:.1f}s). "
                 f"If it is a GUI editor, make it wait for the file to close "
                 f"(e.g. EDITOR='code --wait' or 'subl -w')."
             )

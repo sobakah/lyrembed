@@ -1382,12 +1382,14 @@ def test_title_matching():
 
 
 def _fake_providers(monkeypatch, found, instrumental=None):
-    def lrclib(title, artist, album, duration, report, quick=False, aliases="none"):
+    def lrclib(title, artist, album, duration, report, quick=False, aliases="none", with_get=True):
         for provider, detail in (instrumental or {}).items():
             report.mark_instrumental(provider, detail)
         return list(found)
     monkeypatch.setattr(providers, "query_lrclib", lrclib)
     monkeypatch.setattr(providers, "query_netease", lambda *a, **k: [])
+    monkeypatch.setattr(providers, "query_qqmusic", lambda *a, **k: [])
+    monkeypatch.setattr(providers, "query_megalobiz", lambda *a, **k: [])
     monkeypatch.setattr(providers, "query_syncedlyrics", lambda *a, **k: [])
 
 
@@ -1671,11 +1673,13 @@ def test_lrclib_alias_queries_depend_on_the_round():
 def _recording_providers(monkeypatch, first_round):
     rounds = []
 
-    def lrclib(title, artist, album, duration, report, quick=False, aliases="none"):
+    def lrclib(title, artist, album, duration, report, quick=False, aliases="none", with_get=True):
         rounds.append(aliases)
         return list(first_round) if aliases != "only" else []
     monkeypatch.setattr(providers, "query_lrclib", lrclib)
     monkeypatch.setattr(providers, "query_netease", lambda *a, **k: [])
+    monkeypatch.setattr(providers, "query_qqmusic", lambda *a, **k: [])
+    monkeypatch.setattr(providers, "query_megalobiz", lambda *a, **k: [])
     monkeypatch.setattr(providers, "query_syncedlyrics", lambda *a, **k: [])
     return rounds
 
@@ -1799,7 +1803,7 @@ def test_lrclib_asks_without_duration_only_when_needed(cfg, monkeypatch):
 def _round_recorder(monkeypatch, first_round):
     rounds = []
 
-    def lrclib(title, artist, album, duration, report, quick=False, aliases="none"):
+    def lrclib(title, artist, album, duration, report, quick=False, aliases="none", with_get=True):
         rounds.append(("lrclib", aliases))
         return list(first_round) if aliases != "only" else []
 
@@ -1808,6 +1812,8 @@ def _round_recorder(monkeypatch, first_round):
         return []
     monkeypatch.setattr(providers, "query_lrclib", lrclib)
     monkeypatch.setattr(providers, "query_netease", lambda *a, **k: [])
+    monkeypatch.setattr(providers, "query_qqmusic", lambda *a, **k: [])
+    monkeypatch.setattr(providers, "query_megalobiz", lambda *a, **k: [])
     monkeypatch.setattr(providers, "query_syncedlyrics", scrapers)
     monkeypatch.setattr(providers, "HAS_SYNCEDLYRICS", True)
     return rounds
@@ -1844,7 +1850,7 @@ def test_syncedlyrics_skips_the_sources_lyrembed_asks_itself(cfg, monkeypatch):
     monkeypatch.setattr(providers, "HAS_SYNCEDLYRICS", True)
     monkeypatch.setattr(providers, "syncedlyrics", FakeEngine, raising=False)
     providers.query_syncedlyrics("Song", "Band", providers.SearchReport())
-    assert seen == [["Musixmatch", "Megalobiz", "Genius"]]
+    assert seen == [["Musixmatch", "Genius"]]
 
 
 def test_enter_applies_inspected_lyrics(monkeypatch):
@@ -1947,3 +1953,444 @@ def test_romanize_flags_override_the_setting(cfg, tmp_path, monkeypatch):
     assert config.get("settings", "auto_romanize") is False
     cli.main([str(empty), "--auto", "-c", str(user), "--color", "never"])
     assert config.get("settings", "auto_romanize") is True
+
+
+# --- fixes from a third-party review -----------------------------------------
+def test_duplicate_text_keeps_the_fitting_upload_not_the_first(cfg, monkeypatch):
+    # Results arrive in whatever order the requests finish. A cover with the
+    # same text used to hide the original, a fuzzy hit the exact match.
+    cover = _built(provider="LRCLIB", artist="Cover Band", title="Song", duration=200)
+    fuzzy = _built(provider="LRCLIB", artist="A", title="Song", duration=200)
+    exact = _built(provider="LRCLIB", artist="A", title="Song", duration=200, exact=True)
+
+    _fake_providers(monkeypatch, [cover, exact])
+    report = providers.collect_candidates("Song", "A", "", 200)
+    assert [c.artist for c in report.candidates] == ["A"]
+
+    _fake_providers(monkeypatch, [fuzzy, exact])
+    report = providers.collect_candidates("Song", "A", "", 200)
+    assert len(report.candidates) == 1 and report.candidates[0].exact
+
+
+def test_middle_dot_and_dash_do_not_make_lyrics_japanese():
+    assert text.detect_script("我爱你・你爱我\n今天天气很好") == "zh"
+    assert text.detect_script("사랑・이별\n사랑해요") == "ko"
+    assert text.detect_script("你好ー世界\n我们走吧") == "zh"     # ー used as a dash
+    assert not text.contains_kana("约翰・史密斯")
+    assert text.detect_script("コーヒー・ブレイク\n君が好き") == "ja"
+    assert text.contains_kana("すごーい")
+
+
+@pytest.mark.skipif(not (text.HAS_PYPINYIN and text.HAS_KAKASI), reason="needs pypinyin and pykakasi")
+def test_han_next_to_a_middle_dot_is_not_read_as_japanese():
+    out = text.romanize_lyrics("你・我是朋友", "mixed")
+    assert out.startswith("nǐ・wǒ"), out
+
+
+@pytest.mark.skipif(not text.HAS_KOREAN, reason="needs the Korean romanizer")
+def test_layout_below_adds_no_copies_of_unchanged_lines():
+    lyrics = "[ti:사랑]\n[00:01.00]Hello \n[00:02.00]Hello  world\n[00:03.00]사랑해"
+    out = text.romanize_lyrics(lyrics, "ko", keep_original=True).splitlines()
+    assert out[:3] == ["[ti:사랑]", "[00:01.00]Hello ", "[00:02.00]Hello  world"]
+    assert out[3] == "[00:03.00]사랑해" and out[4].startswith("[00:03.00]") and len(out) == 5
+
+
+def test_bracketed_instrumental_note_counts_for_the_flag(cfg, monkeypatch):
+    # Cleaning drops '(インスト)' with the other bracketed Japanese text.
+    record = {"id": 1, "trackName": "Song (Inst.)", "artistName": "A", "duration": 200,
+              "instrumental": True, "plainLyrics": None, "syncedLyrics": None}
+
+    class FakeResponse:
+        status_code = 200
+        reason = "OK"
+
+        def json(self):
+            return [record]
+
+    class FakeSession:
+        def get(self, url, params=None, timeout=None, headers=None):
+            return FakeResponse()
+
+    monkeypatch.setattr(providers, "get_session", lambda: FakeSession())
+    monkeypatch.setattr(providers, "_lrclib_queries", lambda *a, **k: [("search", {"q": "x"})])
+    report = providers.SearchReport()
+    providers.query_lrclib("Song (インスト)", "A", "", 200, report)
+    assert report.instrumental == {"LRCLIB": "Song (Inst.)"}
+
+
+def test_bracketed_titles_get_separate_cache_slots():
+    key = providers.SearchCache.key
+    assert key("(사랑)", "A", "X", 0) != key("(이별)", "A", "X", 0)
+
+
+def test_path_completion_keeps_spaces_and_lists_once(tmp_path, monkeypatch):
+    (tmp_path / "My Album" / "CD1").mkdir(parents=True)
+    (tmp_path / "My Album" / "CD2").mkdir()
+    calls = []
+    real_glob = ui.glob.glob
+    monkeypatch.setattr(ui.glob, "glob", lambda pattern: calls.append(pattern) or real_glob(pattern))
+    prefix = str(tmp_path / "My Album" / "C")
+    results = []
+    state = 0
+    while (match := ui.complete_path(prefix, state)) is not None:
+        results.append(match)
+        state += 1
+    assert results == [str(tmp_path / "My Album" / n) + os.sep for n in ("CD1", "CD2")]
+    assert len(calls) == 1
+    assert ui.complete_path("'" + str(tmp_path / "My Al"), 0) == str(tmp_path / "My Album") + os.sep
+
+    delims = []
+    fakes = {"set_completer_delims": delims.append, "parse_and_bind": lambda s: None,
+             "set_completer": lambda f: None}
+    monkeypatch.setattr(ui, "_rl", lambda name: fakes.get(name))
+    ui.enable_path_completion()
+    assert delims and " " not in delims[0]
+
+
+def test_unusable_config_values_fall_back_with_a_warning(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        '{"aliases": ["BTS", "Bangtan Boys"],'
+        ' "api": {"max_workers": 0},'
+        ' "settings": {"preview_lines": -5, "color": "invalid", "romanization_layout": "Below"}}',
+        encoding="utf-8",
+    )
+    merged, warnings = config.load_config(path)
+    joined = " ".join(warnings)
+    assert "'aliases' must be a list of groups" in joined
+    assert merged["api"]["max_workers"] == 8 and "api.max_workers" in joined
+    assert merged["settings"]["preview_lines"] == 16 and "settings.preview_lines" in joined
+    assert merged["settings"]["color"] == "auto" and "settings.color" in joined
+    assert merged["settings"]["romanization_layout"] == "Below"   # case does not matter
+    assert "romanization_layout" not in joined
+
+
+def test_unchanged_edit_after_unsaved_romanization_asks_nothing(cfg, tmp_path, monkeypatch, capsys):
+    track = _flac_with_lyrics(tmp_path / "a.flac", "[00:01.00]사랑")
+    monkeypatch.setattr(app, "prompt_romanization", lambda lyrics: "[00:01.00]sarang")
+    monkeypatch.setattr(app, "open_editor", lambda text: text)
+    # r = romanize, n = do not save, e = edit without changes, s = next track,
+    # y = discard the unsaved romanization
+    _scripted_input(monkeypatch, ["r", "n", "e", "s", "y"])
+    monkeypatch.setattr(ui, "safe_input", app.safe_input)
+    meta = tagging.read_metadata(track)
+    assert app.manage_existing_lyrics(meta, tagging.MetadataCache()) is app.Action.NEXT
+    assert "No changes." in capsys.readouterr().out
+    assert tagging.read_metadata(track).lyrics == "[00:01.00]사랑"
+
+
+def test_editor_closed_at_once_is_a_note_not_an_error(monkeypatch, tmp_path):
+    script = tmp_path / "quit.py"
+    script.write_text("pass\n", encoding="utf-8")
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.setenv("EDITOR", f"{sys.executable} {script}")
+    shown = []
+    monkeypatch.setattr(app, "info", lambda msg: shown.append(("info", msg)))
+    monkeypatch.setattr(app, "error", lambda msg: shown.append(("error", msg)))
+    with pytest.raises(editor.EditorError) as caught:
+        editor.open_editor("original")
+    app.report_editor_error(caught.value)
+    assert shown[0][0] == "info" and shown[0][1].startswith("No changes")
+
+
+def test_tree_overview_continues_at_the_current_track(cfg, tmp_path, monkeypatch, capsys):
+    files = [_flac_with_lyrics(tmp_path / f"{n}.flac", f"[00:01.00]{n}") for n in ("a", "b", "c")]
+    # jump to track 2, back to the tree, Enter, quit
+    _scripted_input(monkeypatch, ["2", "t", "", "q"])
+    with pytest.raises(ui.QuitRequested):
+        app.run_interactive(files, tmp_path, tagging.MetadataCache())
+    out = capsys.readouterr().out
+    assert re.findall(r"\[(\d)/3\]", out) == ["2", "2"]
+    assert "Continue with track 2" in out
+
+
+def test_search_stays_cached_after_saving(cfg, tmp_path, monkeypatch):
+    from mutagen.flac import FLAC
+
+    track = _make_flac(tmp_path / "a.flac")
+    audio = FLAC(track)
+    audio["title"], audio["artist"] = "Song", "A"
+    audio.save()
+    found = _built(provider="LRCLIB", artist="A", title="Song", duration=10, track_duration=10)
+    _fake_providers(monkeypatch, [found])
+    searches = []
+    real_collect = providers.collect_candidates
+    monkeypatch.setattr(providers, "collect_candidates",
+                        lambda *a, **k: searches.append(a) or real_collect(*a, **k))
+    # Enter = first track, Enter = save the result; the end of the list leads
+    # back to the tree: 1 = the track again, o = search online instead.
+    _scripted_input(monkeypatch, ["", "", "1", "o"])
+    monkeypatch.setattr(ui, "safe_input", app.safe_input)
+    with pytest.raises(ui.QuitRequested):
+        app.run_interactive([track], tmp_path, tagging.MetadataCache())
+    assert tagging.read_metadata(track).lyrics == found.text
+    assert len(searches) == 1
+
+
+# --- LRCLIB rate limit -------------------------------------------------------
+class _CountingSession:
+    """Answers LRCLIB with *status* (404 for /get, [] for /search when 200)
+    and NetEase with no songs; counts LRCLIB requests and their overlap."""
+
+    def __init__(self, status=200, retry_after="7"):
+        import threading
+
+        self.status, self.retry_after = status, retry_after
+        self.lrclib = []
+        self.active = self.peak = 0
+        self._lock = threading.Lock()
+
+    def get(self, url, params=None, timeout=None, headers=None):
+        class Response:
+            reason = "x"
+
+            def __init__(self, status, payload, headers):
+                self.status_code, self._payload, self.headers = status, payload, headers
+
+            def json(self):
+                return self._payload
+
+            def raise_for_status(self):
+                pass
+
+        if "lrclib" not in url:
+            return Response(200, {"result": {"songs": []}}, {})
+        with self._lock:
+            self.lrclib.append(url.rsplit("/", 1)[1])
+            self.active += 1
+            self.peak = max(self.peak, self.active)
+        time.sleep(0.01)
+        with self._lock:
+            self.active -= 1
+        if self.status == 429:
+            return Response(429, {}, {"Retry-After": self.retry_after})
+        return Response(404, None, {}) if url.endswith("/get") else Response(200, [], {})
+
+
+def test_rate_limit_is_reported_not_retried(cfg, monkeypatch):
+    session = _CountingSession(status=429)
+    monkeypatch.setattr(providers, "get_session", lambda: session)
+    cfg["api"]["enable_syncedlyrics"] = False
+    report = providers.collect_candidates("Song", "IU", "Album", 200)
+    assert report.rate_limited == {"LRCLIB": 7.0}
+    assert any("Rate limited" in m for m in report.errors["LRCLIB"])
+    # The first refusal stops the queued queries, and the alias round does
+    # not ask LRCLIB again: at most the requests already in flight.
+    assert len(session.lrclib) <= providers._LRCLIB_PARALLEL
+
+
+def test_session_does_not_retry_429(cfg, monkeypatch):
+    monkeypatch.setattr(providers, "_SESSION", None)
+    retry = providers.get_session().get_adapter("https://lrclib.net").max_retries
+    providers.close_session()
+    assert 429 not in retry.status_forcelist and 503 in retry.status_forcelist
+
+
+def test_lrclib_requests_are_not_sent_all_at_once(cfg, monkeypatch):
+    session = _CountingSession()
+    monkeypatch.setattr(providers, "get_session", lambda: session)
+    providers.query_lrclib("Song", "IU", "Album", 200, providers.SearchReport(), aliases="all")
+    assert len(session.lrclib) > 4
+    assert session.peak <= 2
+
+
+def test_batch_search_asks_get_only_once(cfg, monkeypatch):
+    session = _CountingSession()
+    monkeypatch.setattr(providers, "get_session", lambda: session)
+    cfg["api"]["enable_syncedlyrics"] = False
+    meta = tagging.TrackMeta(path=Path("x.flac"), title="Song", artist="Band", album="Album", duration=200)
+    app.find_automatic(meta)
+    # /get with duration, then without; the full search does not repeat them.
+    assert session.lrclib.count("get") == 2
+    assert session.lrclib.count("search") == 3
+
+
+def test_batch_waits_and_retries_a_rate_limited_track(cfg, tmp_path, monkeypatch, capsys):
+    from mutagen.flac import FLAC
+
+    track = _make_flac(tmp_path / "a.flac")
+    audio = FLAC(track)
+    audio["title"], audio["artist"] = "Song", "A"
+    audio.save()
+    found = _built(provider="LRCLIB", artist="A", title="Song", duration=10, track_duration=10)
+    limited = providers.SearchReport(rate_limited={"LRCLIB": 3.0})
+    answers = iter([(limited, None), (providers.SearchReport(candidates=[found]), found)])
+    monkeypatch.setattr(app, "find_automatic", lambda meta: next(answers))
+    waits = []
+    monkeypatch.setattr(app.time, "sleep", waits.append)
+    failures = app.run_batch([track], tmp_path, tagging.MetadataCache(), overwrite=False, dry_run=True)
+    out = capsys.readouterr().out
+    assert waits == [10.0]
+    assert "limiting requests; waiting 10s" in out and "would apply" in out
+    assert failures == 0
+
+
+# --- QQ Music ----------------------------------------------------------------
+def _qq_session(songs, lyrics):
+    """Fake session: LRCLIB and NetEase find nothing, QQ Music answers a
+    search with *songs* and lyrics from *lyrics* by songmid."""
+    fetched = []
+
+    class Response:
+        status_code = 200
+        reason = "OK"
+        headers: dict = {}
+
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+        def raise_for_status(self):
+            pass
+
+    class Session:
+        def get(self, url, params=None, timeout=None, headers=None):
+            if "client_search_cp" in url:
+                return Response({"code": 0, "data": {"song": {"list": songs}}})
+            if "fcg_query_lyric" in url:
+                fetched.append(params["songmid"])
+                return Response({"retcode": 0, "code": 0, "lyric": lyrics.get(params["songmid"], "")})
+            if "lrclib" in url:
+                response = Response([])
+                if url.endswith("/get"):
+                    response.status_code = 404
+                return response
+            return Response({"result": {"songs": []}})
+
+    return Session(), fetched
+
+
+def test_qqmusic_results_are_listed_without_its_header_lines(cfg, monkeypatch):
+    songs = [
+        {"songmid": "m1", "songname": "BIZNESS", "singer": [{"name": "XLOV"}], "albumname": "I ONE", "interval": 156},
+        {"songmid": "m2", "songname": "半句再见", "singer": [{"name": "孙燕姿"}], "albumname": "X", "interval": 242},
+    ]
+    lyrics = {"m1": "[ti:BIZNESS]\n[ar:XLOV]\n[al:I ONE]\n[by:]\n[offset:0]\n[kana:1よね1づ]\n"
+                    "[00:00.00]BIZNESS - XLOV\n[00:00.31]词：우무티\n[00:00.63]曲：QSTNMRKS\n[00:12.00]la la"}
+    session, fetched = _qq_session(songs, lyrics)
+    monkeypatch.setattr(providers, "get_session", lambda: session)
+    cfg["api"]["enable_syncedlyrics"] = False
+    report = providers.collect_candidates("BIZNESS", "XLOV", "I ONE", 156)
+    assert fetched == ["m1"]                            # the filler's lyrics are not requested
+    assert [c.provider for c in report.candidates] == ["QQMUSIC"]
+    assert report.candidates[0].text == "[00:12.00]la la"
+    assert report.candidates[0].album == "I ONE"
+
+
+def test_qqmusic_pure_music_notice_marks_the_track_instrumental(cfg, monkeypatch):
+    songs = [{"songmid": "m1", "songname": "Merry Christmas Mr. Lawrence", "singer": [{"name": "坂本龙一"}],
+              "albumname": "A", "interval": 331}]
+    lyrics = {"m1": "[00:00:00]此歌曲为没有填词的纯音乐，请您欣赏"}
+    session, _ = _qq_session(songs, lyrics)
+    monkeypatch.setattr(providers, "get_session", lambda: session)
+    report = providers.SearchReport()
+    # Artist names differ in script (龍/龙); the length vouches instead.
+    assert providers.query_qqmusic("Merry Christmas Mr. Lawrence", "坂本龍一", 331, report) == []
+    assert report.instrumental == {"QQ Music": "Merry Christmas Mr. Lawrence"}
+
+
+def test_instrumental_version_does_not_fit_by_length(cfg, monkeypatch):
+    sung = _built(provider="QQMUSIC", artist="XLOV", title="BIZNESS", duration=156, track_duration=156,
+                  text="[00:01.00]sung")
+    inst = _built(provider="QQMUSIC", artist="XLOV", title="BIZNESS (纯音乐)", duration=156, track_duration=156,
+                  text="[00:01.00]other")
+    _fake_providers(monkeypatch, [sung, inst])
+    report = providers.collect_candidates("BIZNESS", "XLOV", "", 156)
+    assert [c.title for c in report.candidates] == ["BIZNESS"]
+    assert [c.title for c in report.unrelated] == ["BIZNESS (纯音乐)"]
+
+
+# --- Megalobiz ---------------------------------------------------------------
+def test_megalobiz_is_asked_only_when_the_first_round_falls_short(cfg, monkeypatch):
+    calls = []
+    cfg["api"]["enable_syncedlyrics"] = False
+
+    found = _built(provider="LRCLIB", artist="A", title="Song", duration=200)
+    _fake_providers(monkeypatch, [found])
+    monkeypatch.setattr(providers, "query_megalobiz", lambda *a, **k: calls.append(k) or [])
+    report = providers.collect_candidates("Song", "A", "", 200)
+    assert calls == [] and not report.megalobiz_fallback
+
+    _fake_providers(monkeypatch, [])
+    monkeypatch.setattr(providers, "query_megalobiz", lambda *a, **k: calls.append(k) or [])
+    report = providers.collect_candidates("Song", "A", "", 200)
+    assert calls == [{"aliases": "none"}] and report.megalobiz_fallback
+
+
+def _megalobiz_session(results, sheets, status=200):
+    requests_seen = []
+
+    class Response:
+        reason = "x"
+
+        def __init__(self, code, payload, headers=None):
+            self.status_code, self._payload, self.headers = code, payload, headers or {}
+
+        def json(self):
+            return self._payload
+
+        def raise_for_status(self):
+            pass
+
+    class Session:
+        def get(self, url, params=None, timeout=None, headers=None):
+            requests_seen.append((url.rsplit("/v1/", 1)[1], dict(headers or {})))
+            if status == 429:
+                return Response(429, {}, {"Retry-After": "3600"})
+            if url.endswith("/search"):
+                return Response(200, {"results": results})
+            return Response(200, sheets[int(url.rsplit("/", 1)[1])])
+
+    return Session(), requests_seen
+
+
+def test_megalobiz_fetches_only_fitting_sheets_and_keeps_their_link(cfg, monkeypatch):
+    monkeypatch.setattr(providers, "_megalobiz_blocked_until", 0.0)
+    results = [
+        {"id": 1, "title": "BIZNESS", "artist": "XLOV", "duration": 156.2, "url": "https://megalobiz.com/lrc/1/b"},
+        {"id": 2, "title": "1&Only", "artist": "XLOV", "duration": 175.0, "url": "https://megalobiz.com/lrc/2/o"},
+    ]
+    sheets = {1: {"id": 1, "title": "BIZNESS", "artist": "XLOV", "duration": 156.2, "synced_by": "fan",
+                  "url": "https://megalobiz.com/lrc/1/b",
+                  "lrc": "[ar:XLOV]\n[ti:BIZNESS]\n[by:fan]\n[length:02:36.20]\n[re:Megalobiz]\n[00:01.00]la"}}
+    session, seen = _megalobiz_session(results, sheets)
+    monkeypatch.setattr(providers, "get_session", lambda: session)
+    cfg["api"]["megalobiz_api_key"] = "mbz_test"
+    found = providers.query_megalobiz("BIZNESS", "XLOV", 156, providers.SearchReport())
+    assert [path for path, _ in seen] == ["search", "lrc/1"]        # '1&Only' is not fetched
+    assert all(h.get("X-API-Key") == "mbz_test" for _, h in seen)
+    assert len(found) == 1
+    cand = found[0]
+    assert (cand.provider, cand.album, cand.url, cand.diff) == ("MEGALOBIZ", "synced by fan", "https://megalobiz.com/lrc/1/b", 0)
+    assert cand.text == "[00:01.00]la"                # header tags removed
+
+
+def test_megalobiz_rate_limit_skips_it_without_stalling_a_batch(cfg, monkeypatch):
+    monkeypatch.setattr(providers, "_megalobiz_blocked_until", 0.0)
+    session, seen = _megalobiz_session([], {}, status=429)
+    monkeypatch.setattr(providers, "get_session", lambda: session)
+    report = providers.SearchReport()
+    assert providers.query_megalobiz("Song", "A", 200, report) == []
+    assert "rate limit reached, skipped for 1h 00min" in report.errors["Megalobiz"][0]
+    assert report.rate_limited == {}                # a batch run does not wait for it
+    later = providers.SearchReport()
+    assert providers.query_megalobiz("Other", "A", 200, later) == []
+    assert len(seen) == 1                           # not asked again while blocked
+    assert "skipped: rate limit reached, free again in" in later.errors["Megalobiz"][0]
+
+
+def test_inspect_view_links_the_source_page(monkeypatch, capsys):
+    _scripted_input(monkeypatch, [""])
+    app.inspect_and_confirm("[00:01.00]la", "#1", source_url="https://megalobiz.com/lrc/1/b")
+    assert "Source: https://megalobiz.com/lrc/1/b" in capsys.readouterr().out
+
+
+def test_qqmusic_title_line_is_found_despite_version_notes():
+    lyrics = "[ti:Lemon]\n[offset:-300]\n[00:00.00]Lemon - 米津玄師 (よねづ けんし)\n[00:00.81]夢ならば"
+    # The song is 'Lemon (Live)', the line says 'Lemon'; the offset shifts
+    # the timing and stays.
+    assert providers._strip_qqmusic_extras(lyrics, "Lemon (Live)") == "[offset:-300]\n[00:00.81]夢ならば"
+    # A first lyric line that merely contains ' - ' is kept.
+    assert providers._strip_qqmusic_extras("[00:01.00]Run - run away", "Lemon") == "[00:01.00]Run - run away"

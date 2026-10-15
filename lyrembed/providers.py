@@ -8,6 +8,7 @@ instead of the sum of up to thirty sequential requests.
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from collections import OrderedDict
@@ -25,11 +26,13 @@ except ImportError:  # pragma: no cover
 
 from . import config
 from .text import (
+    TIMESTAMP_REGEX,
     clean_tag,
     get_artist_aliases,
     has_timestamps,
     instrumental_marker,
     is_credit_line,
+    is_header_line,
     script_label,
     matches_artist,
     matches_title,
@@ -51,6 +54,8 @@ NETEASE_HEADERS = {
 }
 
 _SESSION: requests.Session | None = None
+# The providers ask for the session from their own threads at once.
+_SESSION_LOCK = threading.Lock()
 
 
 def get_session() -> requests.Session:
@@ -58,13 +63,22 @@ def get_session() -> requests.Session:
     global _SESSION
     if _SESSION is not None:
         return _SESSION
+    with _SESSION_LOCK:
+        if _SESSION is None:
+            _SESSION = _new_session()
+        return _SESSION
 
+
+def _new_session() -> requests.Session:
     session = requests.Session()
     session.headers.update({"User-Agent": str(config.get("api", "user_agent"))})
     retry = Retry(
         total=int(config.get("api", "retry_total", 2)),
         backoff_factor=float(config.get("api", "retry_backoff", 0.3)),
-        status_forcelist=(429, 500, 502, 503, 504),
+        # Not 429: LRCLIB rate-limits per client, and every automatic retry
+        # of a refused request counted against the limit again. A refusal is
+        # reported instead, and batch mode pauses (SearchReport.rate_limited).
+        status_forcelist=(500, 502, 503, 504),
         allowed_methods=frozenset(["GET"]),
         raise_on_status=False,
     )
@@ -72,15 +86,15 @@ def get_session() -> requests.Session:
     adapter = HTTPAdapter(max_retries=retry, pool_connections=pool, pool_maxsize=pool)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
-    _SESSION = session
     return session
 
 
 def close_session() -> None:
     global _SESSION
-    if _SESSION is not None:
-        _SESSION.close()
-        _SESSION = None
+    with _SESSION_LOCK:
+        if _SESSION is not None:
+            _SESSION.close()
+            _SESSION = None
 
 
 @dataclass
@@ -104,6 +118,8 @@ class Candidate:
     # The provider returns lyrics without saying which recording they belong
     # to (syncedlyrics), so neither artist nor title could be checked.
     unverified: bool = False
+    # Page of the lyrics at their source, where its terms ask to link to it.
+    url: str = ""
 
     @property
     def duration_checked(self) -> bool:
@@ -112,7 +128,7 @@ class Candidate:
 
     @classmethod
     def build(cls, *, provider, artist, title, album, text, duration=0, track_duration=0,
-              exact=False, unverified=False):
+              exact=False, unverified=False, url=""):
         text = text.strip()
         script = script_label(text)
         has_duration = bool(duration)
@@ -132,6 +148,7 @@ class Candidate:
             exact=exact,
             track_duration=track_duration or 0,
             unverified=unverified,
+            url=url or "",
         )
 
 
@@ -150,6 +167,11 @@ class SearchReport:
     alias_fallback: bool = False
     # Whether the syncedlyrics scrapers ran because the first round fell short.
     scraper_fallback: bool = False
+    # Whether Megalobiz was asked; it only ever is in the second round.
+    megalobiz_fallback: bool = False
+    # Providers that refused requests as too many, with the seconds they asked
+    # to wait (Retry-After).
+    rate_limited: dict[str, float] = field(default_factory=dict)
     # The providers run in parallel threads and all report into one instance.
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
@@ -162,6 +184,21 @@ class SearchReport:
     def mark_instrumental(self, provider: str, detail: str) -> None:
         with self._lock:
             self.instrumental.setdefault(provider, detail)
+
+    def mark_rate_limited(self, provider: str, wait: float) -> None:
+        with self._lock:
+            self.rate_limited[provider] = max(wait, self.rate_limited.get(provider, 0.0))
+
+    def merge(self, earlier: SearchReport) -> None:
+        """Take over notices from an earlier round whose requests are not
+        repeated, so the user still sees them."""
+        for provider, messages in earlier.errors.items():
+            for message in messages:
+                self.add_error(provider, message)
+        for provider, detail in earlier.instrumental.items():
+            self.mark_instrumental(provider, detail)
+        for provider, wait in earlier.rate_limited.items():
+            self.mark_rate_limited(provider, wait)
 
     @property
     def has_errors(self) -> bool:
@@ -203,13 +240,16 @@ def _artist_names(artist: str, aliases: str) -> list[str]:
 
 
 def _lrclib_queries(title: str, artist: str, album: str, duration: int,
-                    quick: bool = False, aliases: str = "none") -> list[tuple[str, dict]]:
+                    quick: bool = False, aliases: str = "none",
+                    with_get: bool = True) -> list[tuple[str, dict]]:
     """Build a deduplicated list of (endpoint, params) pairs.
 
     *quick* keeps only the canonical ``/get`` lookups. Batch mode tries those
     first: they answer most tracks with one or two requests, where the full
     fan-out costs a dozen per track against a free community service.
-    *aliases* is "none", "only" or "all"; see ``_artist_names``.
+    *aliases* is "none", "only" or "all"; see ``_artist_names``. Without
+    *with_get* the ``/get`` lookup is left out, because a quick round already
+    asked it.
     """
     queries: list[tuple[str, dict]] = []
     seen: set[tuple] = set()
@@ -225,7 +265,8 @@ def _lrclib_queries(title: str, artist: str, album: str, duration: int,
         # /get returns the canonical match and prefers synced lyrics server-side.
         # With a duration it only matches within 2 s; query_lrclib asks again
         # without one only when that finds nothing, rather than every time.
-        add("get", {"track_name": title, "artist_name": artist, "album_name": album, "duration": duration})
+        if with_get:
+            add("get", {"track_name": title, "artist_name": artist, "album_name": album, "duration": duration})
         if quick:
             return queries
         # Each search finds uploads the others miss (measured on eight tracks:
@@ -254,14 +295,36 @@ def _cleaned(raw: str) -> str:
 def _same_version(searched: str, record_title: str) -> bool:
     """Whether a provider record's instrumental flag can speak for the searched
     track. matches_title ignores version notes, so '1&Only (Inst.)' would match
-    '1&Only' and mark the sung track instrumental when an album has both."""
+    '1&Only' and mark the sung track instrumental when an album has both.
+    *searched* is the title as tagged: cleaning removes notes such as
+    '(インスト)' together with the other bracketed text."""
     if (instrumental_marker(searched) is None) != (instrumental_marker(record_title) is None):
         return False
     return matches_title(searched, record_title)
 
 
+class RateLimited(requests.HTTPError):
+    """HTTP 429, with the wait the server asked for."""
+
+    def __init__(self, wait: float) -> None:
+        super().__init__(f"HTTP 429 (Too Many Requests, retry after {wait:g}s)")
+        self.wait = wait
+
+
+def _retry_after(response) -> float:
+    try:
+        return max(0.0, float(response.headers.get("Retry-After", "")))
+    except (TypeError, ValueError, AttributeError):
+        return 0.0
+
+
+# LRCLIB is a free community service behind a per-client rate limit; all
+# queries of a track at once (up to eleven with aliases) ran into it.
+_LRCLIB_PARALLEL = 2
+
+
 def query_lrclib(title: str, artist: str, album: str, duration: int, report: SearchReport,
-                 quick: bool = False, aliases: str = "none") -> list[Candidate]:
+                 quick: bool = False, aliases: str = "none", with_get: bool = True) -> list[Candidate]:
     if not config.get("api", "enable_lrclib", True):
         return []
 
@@ -270,19 +333,29 @@ def query_lrclib(title: str, artist: str, album: str, duration: int, report: Sea
         return []
     base_url = str(config.get("api", "lrclib_url")).rstrip("/")
     session = get_session()
-    queries = _lrclib_queries(clean_t, clean_a, clean_alb, duration, quick=quick, aliases=aliases)
-    workers = min(len(queries), int(config.get("api", "max_workers", 8)))
+    queries = _lrclib_queries(clean_t, clean_a, clean_alb, duration, quick=quick, aliases=aliases,
+                              with_get=with_get)
+    workers = min(len(queries), int(config.get("api", "max_workers", 8)), _LRCLIB_PARALLEL)
     if workers <= 0:
         return []
 
+    # Once LRCLIB refuses one request as too many, the queued ones are not
+    # sent: they would be refused as well and prolong the limit.
+    refused = threading.Event()
+
     def fetch(job):
         endpoint, params = job
+        if refused.is_set():
+            return endpoint, []
         response = session.get(f"{base_url}/{endpoint}", params=params, timeout=_timeout())
         if response.status_code == 404 and endpoint == "get" and "duration" in params:
             params = {k: v for k, v in params.items() if k != "duration"}
             response = session.get(f"{base_url}/{endpoint}", params=params, timeout=_timeout())
         if response.status_code == 404:
             return endpoint, []
+        if response.status_code == 429:
+            refused.set()
+            raise RateLimited(_retry_after(response))
         if response.status_code != 200:
             reason = response.reason or "Unexpected status"
             raise requests.HTTPError(f"HTTP {response.status_code} ({reason})")
@@ -299,6 +372,10 @@ def query_lrclib(title: str, artist: str, album: str, duration: int, report: Sea
         for future in as_completed(futures):
             try:
                 endpoint, payload = future.result()
+            except RateLimited as exc:
+                report.mark_rate_limited("LRCLIB", exc.wait)
+                report.add_error("LRCLIB", "Rate limited (HTTP 429): too many requests, try again later")
+                continue
             except (requests.RequestException, ValueError) as exc:
                 report.add_error("LRCLIB", _describe_error(exc) if isinstance(exc, requests.RequestException) else str(exc))
                 continue
@@ -328,7 +405,7 @@ def query_lrclib(title: str, artist: str, album: str, duration: int, report: Sea
             # fuzzy /search hit may be another song's instrumental.
             if endpoint == "get":
                 report.mark_instrumental("LRCLIB", "exact match")
-            elif (_same_version(clean_t, item.get("trackName") or "")
+            elif (_same_version(title, item.get("trackName") or "")
                   and matches_artist(clean_a, item.get("artistName") or "")):
                 report.mark_instrumental("LRCLIB", item.get("trackName") or "")
             continue
@@ -355,6 +432,17 @@ def query_lrclib(title: str, artist: str, album: str, duration: int, report: Sea
 # NetEase throttles quickly: after a burst it answers every search with popular
 # songs. Lyrics are fetched for at most this many of the best-fitting songs.
 _NETEASE_LYRIC_FETCHES = 3
+
+
+def _fit(clean_t: str, clean_a: str, duration: int, name: str, artists: str, seconds: int) -> int:
+    """How well a search hit fits the track; 0 means not at all.
+
+    NetEase and QQ Music pad a search without good hits with popular songs.
+    Their lyrics are not worth a request each: only songs whose title, artist
+    or length fits are fetched, the best-fitting first.
+    """
+    close = bool(duration and seconds and abs(seconds - duration) <= _tolerance())
+    return 2 * matches_title(clean_t, name) + 2 * bool(clean_a and matches_artist(clean_a, artists)) + close
 
 
 def query_netease(title: str, artist: str, duration: int, report: SearchReport,
@@ -424,12 +512,7 @@ def query_netease(title: str, artist: str, duration: int, report: SearchReport,
         return int(raw / 1000) if isinstance(raw, (int, float)) else 0
 
     def fit(song) -> int:
-        # NetEase pads a search without good hits with popular songs. Their
-        # lyrics are not worth a request each: only songs whose title, artist
-        # or length fits are fetched, the best-fitting first.
-        close = bool(duration and seconds_of(song) and abs(seconds_of(song) - duration) <= _tolerance())
-        return (2 * matches_title(clean_t, song.get("name") or "")
-                + 2 * bool(clean_a and matches_artist(clean_a, artist_names_of(song))) + close)
+        return _fit(clean_t, clean_a, duration, song.get("name") or "", artist_names_of(song), seconds_of(song))
 
     plausible = sorted((song for song in songs if fit(song)), key=fit, reverse=True)
     if songs and not plausible and clean_a:
@@ -475,7 +558,7 @@ def query_netease(title: str, artist: str, duration: int, report: SearchReport,
                 # counts for a song with this title by this artist - or, as
                 # artist names are often in another script, of this length.
                 close = bool(duration and song_duration and abs(song_duration - duration) <= _tolerance())
-                if _same_version(clean_t, song.get("name") or "") and (matches_artist(clean_a, artist_names) or close):
+                if _same_version(title, song.get("name") or "") and (matches_artist(clean_a, artist_names) or close):
                     report.mark_instrumental("NetEase", song.get("name") or "")
                 continue
             if not lyric.strip():
@@ -498,9 +581,296 @@ def query_netease(title: str, artist: str, duration: int, report: SearchReport,
     return candidates
 
 
+# --- QQ Music ----------------------------------------------------------------
+QQMUSIC_HEADERS = {"Referer": "https://y.qq.com/"}
+# QQ Music answers an instrumental with this notice instead of lyrics; unlike
+# NetEase it has no flag for it.
+_QQMUSIC_PURE_NOTICES = ("纯音乐，请您欣赏", "纯音乐，请欣赏")
+_QQMUSIC_SEARCH_LIMIT = 6
+_QQMUSIC_LYRIC_FETCHES = 3
+
+
+_OFFSET_REGEX = re.compile(r"^\s*\[offset:\s*([+-]?\d+)\s*\]\s*$", re.IGNORECASE)
+
+
+def _strip_headers(lyrics: str) -> str:
+    """Drop the header tags QQ Music and Megalobiz put above the lyrics
+    ([ti:], [ar:], [al:], [by:], [length:], [re:], QQ's long [kana:]
+    reading list): the file's own tags already say all that. A non-zero
+    [offset:] stays, since it shifts the timing."""
+    kept = []
+    for line in lyrics.splitlines():
+        if is_header_line(line):
+            offset = _OFFSET_REGEX.match(line)
+            if not (offset and int(offset.group(1)) != 0):
+                continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def _strip_qqmusic_extras(lyrics: str, title: str) -> str:
+    """Header tags, and QQ Music's first timed line 'Title - Artist'. The
+    title is compared without version notes: the song may be 'Lemon (Live)'
+    while the line says 'Lemon - 米津玄師'."""
+    kept = []
+    title_line_checked = False
+    for line in _strip_headers(lyrics).splitlines():
+        match = TIMESTAMP_REGEX.match(line)
+        if match and not title_line_checked:
+            title_line_checked = True
+            name, sep, _ = match.group(2).strip().partition(" - ")
+            if sep and title and matches_title(title, name) and matches_title(name, title):
+                continue
+        kept.append(line)
+    return "\n".join(kept)
+
+
+def query_qqmusic(title: str, artist: str, duration: int, report: SearchReport,
+                  aliases: str = "none") -> list[Candidate]:
+    """Search QQ Music, whose catalogue is strong in Chinese, Korean and
+    Japanese music. Requests follow NetEase's rules: searches one after
+    another, lyrics only for the few best-fitting hits."""
+    if not config.get("api", "enable_qqmusic", True):
+        return []
+
+    clean_t, clean_a = _cleaned(title), _cleaned(artist)
+    search_url = str(config.get("api", "qqmusic_search_url"))
+    lyric_url = str(config.get("api", "qqmusic_lyric_url"))
+    session = get_session()
+
+    if clean_a:
+        terms = [f"{name} {clean_t}".strip() for name in _artist_names(clean_a, aliases)]
+    else:
+        terms = [] if aliases == "only" else [clean_t]
+    terms = [t for t in dict.fromkeys(terms) if t]
+    if not terms:
+        return []
+
+    def search(term: str) -> list[dict]:
+        params = {"w": term, "format": "json", "n": _QQMUSIC_SEARCH_LIMIT, "p": 1}
+        response = session.get(search_url, params=params, headers=QQMUSIC_HEADERS, timeout=_timeout())
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Unexpected response format")
+        if payload.get("code") not in (None, 0):
+            raise ValueError(f"refused the search (code {payload.get('code')})")
+        data = payload.get("data")
+        block = data.get("song") if isinstance(data, dict) else None
+        songs = block.get("list") if isinstance(block, dict) else None
+        if not isinstance(songs, list):
+            raise ValueError("Unexpected response format (endpoint changed?)")
+        return [song for song in songs if isinstance(song, dict) and song.get("songmid")]
+
+    songs: list[dict] = []
+    seen: set = set()
+    for term in terms:
+        try:
+            found = search(term)
+        except (requests.RequestException, ValueError) as exc:
+            report.add_error("QQ Music", _describe_error(exc) if isinstance(exc, requests.RequestException) else str(exc))
+            continue
+        for song in found:
+            if song["songmid"] not in seen:
+                seen.add(song["songmid"])
+                songs.append(song)
+
+    def artist_names_of(song: dict) -> str:
+        singers = song.get("singer")
+        if not isinstance(singers, list):
+            return ""
+        return ", ".join(s.get("name", "") for s in singers if isinstance(s, dict))
+
+    def seconds_of(song: dict) -> int:
+        raw = song.get("interval", 0)
+        return int(raw) if isinstance(raw, (int, float)) else 0
+
+    def fit(song: dict) -> int:
+        return _fit(clean_t, clean_a, duration, song.get("songname") or "", artist_names_of(song), seconds_of(song))
+
+    plausible = sorted((song for song in songs if fit(song)), key=fit, reverse=True)
+    if songs and not plausible and clean_a:
+        report.add_error("QQ Music", "returned only unrelated songs - it does so when it does not know the song")
+    songs = plausible[:_QQMUSIC_LYRIC_FETCHES]
+    if not songs:
+        return []
+
+    def fetch_lyric(song: dict) -> tuple[dict, str]:
+        params = {"songmid": song["songmid"], "format": "json", "nobase64": 1, "g_tk": 5381}
+        response = session.get(lyric_url, params=params, headers=QQMUSIC_HEADERS, timeout=_timeout())
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Invalid response")
+        # A non-zero retcode is QQ Music's "no lyrics for this song".
+        lyric = payload.get("lyric") if payload.get("retcode") == 0 else ""
+        return song, lyric if isinstance(lyric, str) else ""
+
+    candidates = []
+    workers = max(1, min(len(songs), int(config.get("api", "max_workers", 8))))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for future in as_completed({pool.submit(fetch_lyric, song) for song in songs}):
+            try:
+                song, lyric = future.result()
+            except (requests.RequestException, ValueError) as exc:
+                report.add_error("QQ Music", _describe_error(exc) if isinstance(exc, requests.RequestException) else str(exc))
+                continue
+            name = song.get("songname") or clean_t
+            artist_names = artist_names_of(song)
+            song_duration = seconds_of(song)
+            if any(notice in lyric for notice in _QQMUSIC_PURE_NOTICES):
+                # Same rule as NetEase's pureMusic: only a song with this title
+                # by this artist (or of this length) speaks for the track.
+                close = bool(duration and song_duration and abs(song_duration - duration) <= _tolerance())
+                if _same_version(title, name) and (matches_artist(clean_a, artist_names) or close):
+                    report.mark_instrumental("QQ Music", name)
+                continue
+            lyric = _strip_qqmusic_extras(strip_credit_lines(lyric), name)
+            if not lyric.strip():
+                continue
+            candidates.append(Candidate.build(
+                provider="QQMUSIC",
+                artist=artist_names,
+                title=name,
+                album=song.get("albumname") or "QQ Music",
+                text=lyric,
+                duration=song_duration,
+                track_duration=duration,
+            ))
+    return candidates
+
+
 def strip_credit_lines(lyrics: str) -> str:
     """Drop provider credit headers ('作词 : …') - metadata, not lyrics."""
     return "\n".join(line for line in lyrics.splitlines() if not is_credit_line(line))
+
+
+# --- Megalobiz ---------------------------------------------------------------
+# Community-synced LRC sheets, often several per song and for little-known
+# songs, of varying quality. Its public API allows 30 requests a minute and
+# 1,000 a day per IP without a key, so it is only a second-round fallback.
+_MEGALOBIZ_LYRIC_FETCHES = 3
+_MEGALOBIZ_BLOCK = threading.Lock()
+# After a 429 Megalobiz is left alone until its Retry-After has passed, which
+# for the daily limit can be hours: waiting for it would stall a batch run.
+_megalobiz_blocked_until = 0.0
+
+
+def query_megalobiz(title: str, artist: str, duration: int, report: SearchReport,
+                    aliases: str = "none") -> list[Candidate]:
+    if not config.get("api", "enable_megalobiz", True):
+        return []
+    with _MEGALOBIZ_BLOCK:
+        wait = _megalobiz_blocked_until - time.monotonic()
+    if wait > 0:
+        report.add_error("Megalobiz", f"skipped: rate limit reached, free again in {_format_wait(wait)}")
+        return []
+
+    clean_t, clean_a = _cleaned(title), _cleaned(artist)
+    if not clean_t:
+        return []
+    base = str(config.get("api", "megalobiz_url")).rstrip("/")
+    headers = {}
+    key = str(config.get("api", "megalobiz_api_key", "") or "").strip()
+    if key:
+        headers["X-API-Key"] = key
+    session = get_session()
+
+    def get(path: str, params: dict | None = None) -> dict:
+        global _megalobiz_blocked_until
+        response = session.get(f"{base}/{path}", params=params, headers=headers, timeout=_timeout())
+        if response.status_code == 429:
+            wait = max(60.0, _retry_after(response))
+            with _MEGALOBIZ_BLOCK:
+                _megalobiz_blocked_until = time.monotonic() + wait
+            raise RateLimited(wait)
+        if response.status_code == 401:
+            raise ValueError("API key rejected (api.megalobiz_api_key)")
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise ValueError("Unexpected response format")
+        return payload
+
+    def report_error(exc: Exception) -> None:
+        if isinstance(exc, RateLimited):
+            report.add_error("Megalobiz", f"rate limit reached, skipped for {_format_wait(exc.wait)}")
+        elif isinstance(exc, requests.RequestException):
+            report.add_error("Megalobiz", _describe_error(exc))
+        else:
+            report.add_error("Megalobiz", str(exc))
+
+    names = _artist_names(clean_a, aliases) if clean_a else ([] if aliases == "only" else [""])
+    results: list[dict] = []
+    seen: set = set()
+    # One search after another, like NetEase: the per-minute limit is small.
+    for name in dict.fromkeys(names):
+        params = {"title": clean_t, "limit": 10}
+        if name:
+            params["artist"] = name
+        if duration:
+            params["duration"] = duration
+        try:
+            found = get("search", params).get("results")
+        except (requests.RequestException, ValueError) as exc:
+            report_error(exc)
+            if isinstance(exc, RateLimited):
+                return []
+            continue
+        for item in found if isinstance(found, list) else []:
+            if isinstance(item, dict) and item.get("id") is not None and item["id"] not in seen:
+                seen.add(item["id"])
+                results.append(item)
+
+    def seconds_of(item: dict) -> int:
+        raw = item.get("duration")
+        return int(round(raw)) if isinstance(raw, (int, float)) else 0
+
+    def worth_fetching(item: dict) -> bool:
+        # Its search also lists the artist's other songs ('1&Only' for
+        # 'BIZNESS'). With a daily limit, only sheets whose title fits - or,
+        # for a translated title, whose artist and length do - are fetched.
+        name = item.get("title") or ""
+        if matches_title(clean_t, name):
+            return True
+        close = bool(duration and seconds_of(item) and abs(seconds_of(item) - duration) <= _tolerance())
+        return close and bool(clean_a) and matches_artist(clean_a, item.get("artist") or "")
+
+    chosen = [item for item in results if worth_fetching(item)][:_MEGALOBIZ_LYRIC_FETCHES]
+    candidates = []
+    for item in chosen:
+        try:
+            sheet = get(f"lrc/{item['id']}")
+        except (requests.RequestException, ValueError) as exc:
+            report_error(exc)
+            if isinstance(exc, RateLimited):
+                break
+            continue
+        text = sheet.get("lrc")
+        if not isinstance(text, str) or not _strip_headers(text).strip():
+            continue
+        text = _strip_headers(text)
+        by = sheet.get("synced_by")
+        candidates.append(Candidate.build(
+            provider="MEGALOBIZ",
+            artist=sheet.get("artist") or item.get("artist") or "",
+            title=sheet.get("title") or item.get("title") or clean_t,
+            album=f"synced by {by}" if by else "Megalobiz",
+            text=text,
+            duration=seconds_of(sheet) or seconds_of(item),
+            track_duration=duration,
+            url=sheet.get("url") or item.get("url") or "",
+        ))
+    return candidates
+
+
+def _format_wait(seconds: float) -> str:
+    seconds = int(seconds)
+    if seconds >= 3600:
+        return f"{seconds // 3600}h {seconds % 3600 // 60:02d}min"
+    if seconds >= 60:
+        return f"{seconds // 60}min"
+    return f"{seconds}s"
 
 
 # --- syncedlyrics ------------------------------------------------------------
@@ -629,8 +999,10 @@ class SearchCache:
     @staticmethod
     def key(title: str, artist: str, album: str, duration: int) -> tuple:
         return (
-            clean_tag(title).lower(),
-            clean_tag(artist).lower(),
+            # _cleaned, like the queries: '(사랑)' and '(이별)' both clean
+            # to an empty string and shared one cache slot.
+            _cleaned(title).lower(),
+            _cleaned(artist).lower(),
             clean_tag(album).lower(),
             int(duration or 0),
         )
@@ -659,19 +1031,26 @@ class SearchCache:
 
 
 def _gather(title: str, artist: str, album: str, duration: int, report: SearchReport,
-            quick: bool, aliases: str | None, scrapers: str | None = None) -> list[Candidate]:
+            quick: bool, aliases: str | None, scrapers: str | None = None,
+            with_get: bool = True, megalobiz: str | None = None) -> list[Candidate]:
     """Run providers concurrently for one round of queries.
 
-    *aliases* is the round for LRCLIB and NetEase ("none", "only", "all"), or
+    *aliases* is the round for LRCLIB, NetEase and QQ Music ("none", "only", "all"), or
     None to skip them; *scrapers* the same for syncedlyrics. Ctrl+C returns at
     once instead of waiting for the requests in flight; they finish in the
     background and are discarded.
     """
     jobs = {}
-    if aliases is not None:
-        jobs["LRCLIB"] = lambda: query_lrclib(title, artist, album, duration, report, quick=quick, aliases=aliases)
-        if not quick:
-            jobs["NetEase"] = lambda: query_netease(title, artist, duration, report, aliases=aliases)
+    # A provider that refused requests as too many in an earlier round is
+    # not asked again in this search: each further request prolongs the limit.
+    if aliases is not None and "LRCLIB" not in report.rate_limited:
+        jobs["LRCLIB"] = lambda: query_lrclib(title, artist, album, duration, report, quick=quick,
+                                              aliases=aliases, with_get=with_get)
+    if aliases is not None and not quick:
+        jobs["NetEase"] = lambda: query_netease(title, artist, duration, report, aliases=aliases)
+        jobs["QQ Music"] = lambda: query_qqmusic(title, artist, duration, report, aliases=aliases)
+    if megalobiz is not None and not quick:
+        jobs["Megalobiz"] = lambda: query_megalobiz(title, artist, duration, report, aliases=megalobiz)
     if scrapers is not None and not quick:
         jobs["syncedlyrics"] = lambda: query_syncedlyrics(title, artist, report, aliases=scrapers)
     if not jobs:
@@ -699,17 +1078,22 @@ def _classify(collected: list[Candidate], title: str, artist: str) -> tuple[list
     """Deduplicate and split into results that fit the track and the rest."""
     clean_a = clean_tag(artist)
     searched_instrumental = instrumental_marker(title) is not None
-    seen_texts: set[str] = set()
-    related: list[Candidate] = []
-    unrelated: list[Candidate] = []
+    # Of several uploads with the same text, keep the best one, not the first:
+    # results arrive in whatever order the requests finish, and keeping the
+    # first let a cover hide the original or a fuzzy hit hide the exact one.
+    best: dict[str, tuple[tuple, Candidate]] = {}
     for candidate in collected:
-        fingerprint = " ".join(candidate.text.split())
-        if fingerprint in seen_texts:
-            continue
-        seen_texts.add(fingerprint)
         candidate.match_artist = matches_artist(clean_a, candidate.artist)
         candidate.match_title = _title_fits(title, candidate)
-        (related if is_related(candidate, searched_instrumental) else unrelated).append(candidate)
+        fits = is_related(candidate, searched_instrumental)
+        fingerprint = " ".join(candidate.text.split())
+        key = (0 if fits else 1, rank_key(candidate))
+        if fingerprint not in best or key < best[fingerprint][0]:
+            best[fingerprint] = (key, candidate)
+    related: list[Candidate] = []
+    unrelated: list[Candidate] = []
+    for (rank, _), candidate in best.values():
+        (unrelated if rank else related).append(candidate)
     return related, unrelated
 
 
@@ -720,7 +1104,8 @@ def _enough(collected: list[Candidate], title: str, artist: str) -> bool:
 
 
 def collect_candidates(title: str, artist: str, album: str, duration: int,
-                       quick: bool = False, aliases: bool | None = None) -> SearchReport:
+                       quick: bool = False, aliases: bool | None = None,
+                       after_quick: SearchReport | None = None) -> SearchReport:
     """Query the providers and return ranked candidates.
 
     *quick* asks LRCLIB's canonical ``/get`` endpoint only; see
@@ -728,19 +1113,26 @@ def collect_candidates(title: str, artist: str, album: str, duration: int,
     previous found no synced lyrics that fit - every extra query costs time,
     and NetEase throttles after a burst:
 
-    1. LRCLIB and NetEase with the tag's artist - with its aliases too when
+    1. LRCLIB, NetEase and QQ Music with the tag's artist - with its aliases too when
        *aliases* is true (default: settings.search_all_aliases).
-    2. LRCLIB and NetEase with the aliases, if not searched yet, and the
+    2. LRCLIB, NetEase and QQ Music with the aliases, if not searched yet, and the
        syncedlyrics scrapers (Musixmatch and others). Those run in round 1
        already unless api.syncedlyrics_as_fallback is set.
+
+    *after_quick* is the report of a quick search for the same track: its
+    results are taken over and its ``/get`` lookup is not sent again.
     """
     if aliases is None:
         aliases = bool(config.get("settings", "search_all_aliases", False))
     first = "all" if aliases else "none"
     scrapers_later = bool(config.get("api", "syncedlyrics_as_fallback", True))
     report = SearchReport(aliases_searched=aliases)
-    collected = _gather(title, artist, album, duration, report, quick, first,
-                        None if scrapers_later else first)
+    collected: list[Candidate] = []
+    if after_quick is not None:
+        report.merge(after_quick)
+        collected += after_quick.candidates + after_quick.unrelated
+    collected += _gather(title, artist, album, duration, report, quick, first,
+                         None if scrapers_later else first, with_get=after_quick is None)
 
     # An instrumental track gets no second round: whatever it finds is the
     # sung version.
@@ -748,12 +1140,16 @@ def collect_candidates(title: str, artist: str, album: str, duration: int,
     if not (quick or report.instrumental or searched_instrumental) and not _enough(collected, title, artist):
         alias_round = "only" if not aliases and get_artist_aliases(_cleaned(artist)) else None
         scraper_round = first if scrapers_later else None
-        if alias_round or scraper_round:
-            collected += _gather(title, artist, album, duration, report, quick, alias_round, scraper_round)
+        # Megalobiz only ever runs here: its daily limit is small.
+        megalobiz_round = first if config.get("api", "enable_megalobiz", True) else None
+        if alias_round or scraper_round or megalobiz_round:
+            collected += _gather(title, artist, album, duration, report, quick, alias_round, scraper_round,
+                                 megalobiz=megalobiz_round)
             report.alias_fallback = alias_round is not None
             report.aliases_searched = aliases or report.alias_fallback
             report.scraper_fallback = scraper_round is not None and HAS_SYNCEDLYRICS and bool(
                 config.get("api", "enable_syncedlyrics", True))
+            report.megalobiz_fallback = megalobiz_round is not None
 
     # No fallback to the unrelated results: when nothing fits, NetEase's
     # popular-song filler used to fill the list.
@@ -788,7 +1184,10 @@ def is_related(candidate: Candidate, searched_instrumental: bool = False) -> boo
         return False
     if candidate.match_title:
         return True
-    if searched_instrumental or candidate.unverified:
+    # The length only vouches for a title in another language, not for an
+    # instrumental version of a sung track: 'BIZNESS (纯音乐)' is as long as
+    # 'BIZNESS'.
+    if searched_instrumental or candidate.unverified or instrumental_marker(candidate.title):
         return False
     return candidate.duration_checked and candidate.diff <= _tolerance()
 

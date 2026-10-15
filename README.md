@@ -2,7 +2,7 @@
 
 Vibecoded interactive CLI utility for Linux, macOS and Windows to search, inspect, romanize and embed synchronized (`.lrc`) and plain lyrics into FLAC, MP3, OGG Vorbis, Opus and M4A files with a focus on east asian music.
 
-Version 0.6.0 · Python 3.10+ · MIT
+Version 0.7.0 · Python 3.10+ · MIT
 
 Formerly called **lrckit**; see the [changelog](CHANGELOG.md) for moving an existing setup.
 
@@ -11,7 +11,7 @@ Formerly called **lrckit**; see the [changelog](CHANGELOG.md) for moving an exis
 ## Features
 
 * **Multi-format tagging** — FLAC, MP3, OGG Vorbis, Opus and M4A, plus optional companion `.lrc` sidecar files.
-* **Concurrent multi-provider search** — LRCLIB and NetEase Cloud Music are queried in parallel on a pooled HTTP session with retry and backoff; the optional `syncedlyrics` engine (Musixmatch, Megalobiz, Genius) and the artist's aliases follow only when that finds no synced lyrics.
+* **Concurrent multi-provider search** — LRCLIB, NetEase Cloud Music and QQ Music are queried in parallel on a pooled HTTP session with retry and backoff; Megalobiz (community-synced lyrics, often several versions per song), the artist's aliases and the optional `syncedlyrics` engine follow only when that finds no synced lyrics.
 * **Exact-match lookups** — LRCLIB's `/get` endpoint is queried with title, artist, album and duration; fuzzy `/search` queries run alongside as a fallback.
 * **Confidence-aware ranking** — ordered by exact match, synchronization, script preference and duration agreement.
 * **Smart tag cleaning & aliases** — strips features (`feat. …`), filters localized bracketed subtitles out of queries, and resolves group acronyms (*Tomorrow X Together* ↔ *TXT*) with word-boundary matching.
@@ -75,7 +75,7 @@ pip install --user pykakasi pypinyin korean-romanizer anyascii syncedlyrics
 
 | Package | Functionality |
 |---|---|
-| `syncedlyrics` | Multi-provider scraping engine (Megalobiz, Deezer, …) |
+| `syncedlyrics` | Scraping engine for Musixmatch and Genius (neither answers as of October 2026) |
 | `korean-romanizer` | Hangul → Revised Romanization of Korean |
 | `pykakasi` | Kanji and Kana → Hepburn Rōmaji |
 | `pypinyin` | Hanzi → Pīnyīn with tone marks |
@@ -119,7 +119,7 @@ Exit codes: `0` success or quit, `1` some files failed in batch mode, `2` unusab
 
 ## Keybindings
 
-**Tree overview (entry screen)** — `1`–`N` jump to track · `Enter` start with the first · `a` bulk actions · `c` change directory · `q` quit
+**Tree overview (entry screen)** — `1`–`N` jump to track · `Enter` start with the first track, or after `t` continue with the current one · `a` bulk actions · `c` change directory · `q` quit
 
 **Bulk actions** (`a` in the tree overview) run one action over all tracks or a selection such as `1-5,8`, without asking per track:
 
@@ -148,15 +148,15 @@ Lyrics that `2` or `4` replace, and sidecars that `3` overwrites, are backed up 
 | `t` | Back to the tree overview |
 | `q` | Quit |
 
-`✓exact` marks a record LRCLIB returned as a direct match rather than a search hit; the duration column shows separately whether the length was verified (`Duration OK` / `±Ns`), or just the candidate's own length when the track's length is unknown. `[SYNCEDLYRICS]` results come from the `syncedlyrics` engine, which tries Musixmatch, Megalobiz and Genius (`api.syncedlyrics_providers`) and returns bare text; `?unverified` marks them, since they carry no artist or title to check against. By default the engine only runs when LRCLIB and NetEase find no synced lyrics that fit (`api.syncedlyrics_as_fallback`). NetEase results may come in a second variant marked `user romanization` — the romanized lyrics NetEase users submitted.
+`✓exact` marks a record LRCLIB returned as a direct match rather than a search hit; the duration column shows separately whether the length was verified (`Duration OK` / `±Ns`), or just the candidate's own length when the track's length is unknown. `[MEGALOBIZ]` results come from Megalobiz, a site where users sync lyrics themselves: often several versions of one song, also for little-known songs, of varying quality. It is only asked when LRCLIB, NetEase and QQ Music find no synced lyrics that fit, because its free API allows 30 requests a minute and 1,000 a day (`api.megalobiz_api_key` raises that); after a refusal it is skipped until its limit resets. Its page for the lyrics is shown when you inspect them. `[SYNCEDLYRICS]` results come from the `syncedlyrics` engine, which tries Musixmatch and Genius (`api.syncedlyrics_providers`) and returns bare text; `?unverified` marks them, since they carry no artist or title to check against. By default the engine only runs when LRCLIB, NetEase and QQ Music find no synced lyrics that fit (`api.syncedlyrics_as_fallback`). As of October 2026 neither source answers through syncedlyrics 1.0.1, its latest release: Musixmatch returns the same unrelated songs for every search, Genius refuses the requests. NetEase results may come in a second variant marked `user romanization` — the romanized lyrics NetEase users submitted. `[QQMUSIC]` results come from QQ Music, whose catalogue is strong in Chinese, Korean and Japanese music; it often has lyrics when LRCLIB and NetEase do not.
 
-Only results that fit the track are listed: the artist must match (aliases included), and the title too — or, for a title in another language such as `사랑을 했다` vs `LOVE SCENARIO`, the length. The rest is hidden behind `u` and marked `≠artist` / `≠title` when shown; NetEase in particular pads searches without good hits with unrelated popular songs, whose lyrics are not even fetched; it does the same when it throttles a client that sent too many requests, which lyrembed then reports as a provider notice (`R` retries). To stay below that limit, NetEase gets one search at a time and at most three lyrics requests per round. Version notes count: the sung version is no match for `Song (Inst.)`, even as LRCLIB's exact match.
+Only results that fit the track are listed: the artist must match (aliases included), and the title too — or, for a title in another language such as `사랑을 했다` vs `LOVE SCENARIO`, the length. The rest is hidden behind `u` and marked `≠artist` / `≠title` when shown; NetEase and QQ Music in particular pad searches without good hits with unrelated popular songs, whose lyrics are not even fetched; it does the same when it throttles a client that sent too many requests, which lyrembed then reports as a provider notice (`R` retries). To stay below that limit, NetEase and QQ Music get one search at a time and at most three lyrics requests per round. Version notes count: the sung version is no match for `Song (Inst.)`, even as LRCLIB's exact match, and an instrumental version is no match for the sung track even when its length fits.
 
 **Instrumental tracks.** A `♪` notice says when a track probably has no lyrics, and why:
 
 * the title carries a version note such as `(Inst.)`, `- Instrumental`, `(Off Vocal)`, `(MR)`, `(Karaoke)`, `オフボーカル`, `伴奏`;
 * the language tag is `zxx` ("no lyrics", written by MusicBrainz Picard);
-* LRCLIB marks the track's record as instrumental, or NetEase marks it as `pureMusic` (its "lyrics" are then only the notice `纯音乐，请欣赏`, which is no longer listed);
+* LRCLIB marks the track's record as instrumental, NetEase marks it as `pureMusic` (its "lyrics" are then only the notice `纯音乐，请欣赏`, which is no longer listed), or QQ Music answers with its notice `此歌曲为没有填词的纯音乐，请您欣赏`;
 * with `api.enable_musicbrainz`, MusicBrainz says so for the file's recording ID (tagged by Picard): an instrumental performance, or a work whose lyrics language is "no lyrics". Its data is incomplete, so silence there means nothing.
 
 Batch mode and the bulk fetch skip such tracks and report them as instrumental; tracks recognised by their tags are not even searched.
@@ -205,7 +205,7 @@ Romanization never drops characters: pykakasi silently deletes characters it can
 * **Runs of purely shared characters cannot be resolved automatically.** `月光下的思念` and `東京物語` are valid in either reading and fall back to your choice. Roughly four in five runs resolve on their own in typical lyrics; traditional Chinese resolves less often than simplified.
 * **Japanese word spacing is approximate.** Verb and adjective endings stay attached (`愛してる` → `itoshiteru`), but a particle following a Kana-ending compound may be attached too: `ずっと一緒にいたい` → `zutto isshoniitai`.
 * **Kanji readings come from pykakasi** and are not context-aware for names or unusual readings — `君` becomes `kun`, not `kimi`.
-* **Provider credit headers** such as NetEase's `作词 : …` are removed from NetEase lyrics. Typed into other lyrics by hand, they are ignored when detecting scripts but still passed through the conversion.
+* **Provider credit headers** such as NetEase's `作词 : …` are removed from NetEase and QQ Music lyrics, as are the header tags QQ Music and Megalobiz put above their lyrics (`[ti:]`, `[ar:]`, `[al:]`, `[by:]`, `[length:]`, `[kana:]` and the like; a non-zero `[offset:]` stays) and QQ Music's opening `Title - Artist` line. Typed into other lyrics by hand, they are ignored when detecting scripts but still passed through the conversion.
 
 ---
 
@@ -239,7 +239,7 @@ User values are merged **recursively** over the built-in defaults, so a file wit
 }
 ```
 
-An invalid file found on the search paths produces a warning and the defaults are used; a file given with `--config` must be valid, or the run stops. Values of the wrong type and unknown keys (typos) are reported, and the default is used for them. `config.example.json` is a reference, not a config: lyrembed never reads it. It lists every key with its default value and, in the `_key` entry above it, what the key does. Copy only what you want to change into your own file. Keys starting with `_` are treated as comments, so copying a block with its explanations works too.
+An invalid file found on the search paths produces a warning and the defaults are used; a file given with `--config` must be valid, or the run stops. Values of the wrong type or outside their range (`max_workers: 0`, a `color` other than `auto`/`always`/`never`), alias groups that are not lists, and unknown keys (typos) are reported, and the default is used for them. `config.example.json` is a reference, not a config: lyrembed never reads it. It lists every key with its default value and, in the `_key` entry above it, what the key does. Copy only what you want to change into your own file. Keys starting with `_` are treated as comments, so copying a block with its explanations works too.
 
 **`aliases`** — your own groups of names for the same artist, e.g. `[["Hoshino Gen", "星野源"]]`. They are added to the about 200 built-in groups in [`lyrembed/aliases.json`](lyrembed/aliases.json) (K-pop groups and soloists, Japanese, Chinese, and spellings with and without diacritics); a group sharing a name with a built-in one is merged into it. Aliases let a result filed under another name count as the right artist, and add searches under the other names: by default only when the tag's artist finds no synced lyrics that fit, or when you press `a` in the search results; with `settings.search_all_aliases` always. Names match whole words, ignoring case. `lyrembed --list-aliases` prints every group in effect.
 
@@ -249,18 +249,19 @@ An invalid file found on the search paths produces a warning and the defaults ar
 
 | Key | Meaning |
 |---|---|
-| `lrclib_url`, `netease_search_url`, `netease_lyric_url` | Provider endpoints. NetEase's `/api/search/pc` is the default: `/api/search/get` (the earlier default) answers anonymous clients with unrelated popular songs, and the older `/api/search/get/web` answers encrypted |
+| `lrclib_url`, `netease_search_url`, `netease_lyric_url`, `qqmusic_search_url`, `qqmusic_lyric_url`, `megalobiz_url` | Provider endpoints. NetEase's `/api/search/pc` is the default: `/api/search/get` (the earlier default) answers anonymous clients with unrelated popular songs, and the older `/api/search/get/web` answers encrypted |
 | `timeout_seconds` | Per-request timeout |
 | `netease_search_limit` | Results requested per NetEase query |
 | `user_agent` | Sent to LRCLIB; identify your fork by name, version and URL. Defaults to the current version, so leave it out unless you change it |
 | `max_workers` | Parallel HTTP requests per provider stage |
-| `retry_total`, `retry_backoff` | Automatic retries on 429 and 5xx |
+| `retry_total`, `retry_backoff` | Automatic retries on 5xx server errors. A rate limit (429) is not retried but reported; batch mode then waits and tries the track once more |
 | `duration_tolerance_seconds` | Maximum length difference accepted by `--auto` |
 | `syncedlyrics_timeout_seconds` | How long to wait for the `syncedlyrics` engine, which has no timeout of its own |
-| `syncedlyrics_as_fallback` | `true` (default) runs the engine only when LRCLIB and NetEase find no synced lyrics that fit; `false` with every search |
-| `syncedlyrics_providers` | The engine's sources, default `["Musixmatch", "Megalobiz", "Genius"]`. LRCLIB and NetEase are left out because lyrembed asks them itself; `[]` allows all |
+| `syncedlyrics_as_fallback` | `true` (default) runs the engine only when LRCLIB, NetEase and QQ Music find no synced lyrics that fit; `false` with every search |
+| `syncedlyrics_providers` | The engine's sources, default `["Musixmatch", "Genius"]`. LRCLIB, NetEase and Megalobiz are left out because lyrembed asks them itself; `[]` allows all |
 | `batch_delay_seconds` | Pause between tracks in `--auto` mode |
-| `enable_lrclib`, `enable_netease`, `enable_syncedlyrics` | Turn individual providers off |
+| `enable_lrclib`, `enable_netease`, `enable_qqmusic`, `enable_megalobiz`, `enable_syncedlyrics` | Turn individual providers off |
+| `megalobiz_api_key` | Optional free key from megalobiz.com/developers; raises Megalobiz's limits from 30 requests a minute and 1,000 a day per IP |
 | `enable_musicbrainz` | `true` asks MusicBrainz whether a track is instrumental, for files with a MusicBrainz recording ID. Off by default: one extra request per track, at most one per second |
 | `musicbrainz_url` | MusicBrainz API base URL |
 
@@ -310,7 +311,7 @@ run.py                   Launcher for checkouts
 lyrembed/
   cli.py                 Argument parsing and start-up
   app.py                 Directory scanning, navigation, menus, batch mode
-  providers.py           LRCLIB / NetEase / syncedlyrics, ranking
+  providers.py           LRCLIB / NetEase / QQ Music / Megalobiz / syncedlyrics, ranking
   tagging.py             Metadata reading, writing, caching
   text.py                Tag cleaning, artist matching, romanization
   aliases.json           Built-in artist alias groups

@@ -299,12 +299,22 @@ def print_primary_action(key: str, description: str) -> None:
 
 
 # --- path completion ---------------------------------------------------------
+_completions: tuple[str, list[str]] = ("", [])
+
+
 def complete_path(text: str, state: int):
-    # Music folders are routinely named "Album [FLAC]" or "Live [2019]"; the
-    # brackets must not be read as a glob character class.
-    expanded = os.path.expanduser(text)
-    matches = glob.glob(glob.escape(expanded) + "*")
-    results = [m + (os.sep if os.path.isdir(m) else " ") for m in matches]
+    """Readline completer. Readline calls it with state 0, 1, 2, ... until it
+    returns None; the matches are listed once per Tab, not once per call,
+    which made a large folder cost quadratically many file system lookups."""
+    global _completions
+    if state == 0 or _completions[0] != text:
+        # The prompt strips quotes, so a quoted path completes as well.
+        expanded = os.path.expanduser(text.lstrip("'\""))
+        # Music folders are routinely named "Album [FLAC]" or "Live [2019]";
+        # the brackets must not be read as a glob character class.
+        matches = sorted(glob.glob(glob.escape(expanded) + "*"))
+        _completions = (text, [m + (os.sep if os.path.isdir(m) else " ") for m in matches])
+    results = _completions[1]
     return results[state] if state < len(results) else None
 
 
@@ -314,7 +324,10 @@ def enable_path_completion() -> None:
     set_completer = _rl("set_completer")
     if not (set_delims and parse_bind and set_completer):
         return
-    set_delims(" \t\n;")
+    # The prompt takes exactly one path, so spaces belong to it: with a space
+    # as delimiter, readline passed only "Album/" of "My Album/" to the
+    # completer, and folders with spaces could not be completed into.
+    set_delims("\t\n")
     parse_bind("tab: complete")
     set_completer(complete_path)
 

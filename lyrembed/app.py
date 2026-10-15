@@ -14,7 +14,7 @@ from pathlib import Path
 import requests
 
 from . import config, providers, tagging, text
-from .editor import EditorError, open_editor
+from .editor import EditorError, EditorReturnedAtOnce, open_editor
 from .providers import Candidate, SearchReport
 from .tagging import MetadataCache, TaggingError, TrackMeta
 from .ui import (
@@ -192,6 +192,15 @@ def resolve_music_directory(
         current = Path(cleaned)
 
 
+def report_editor_error(exc: EditorError) -> None:
+    """Quitting a terminal editor at once is no error; it reads as one only
+    for a GUI editor that did not wait, which the message explains."""
+    if isinstance(exc, EditorReturnedAtOnce):
+        info(str(exc))
+    else:
+        error(str(exc))
+
+
 # --- writing -----------------------------------------------------------------
 def save_lyrics(path: Path, lyrics: str, prefix: str = "") -> bool:
     """Embed *lyrics* and report the outcome; True when the tag was written.
@@ -282,7 +291,8 @@ def duration_label(cand: Candidate) -> str:
 
 def print_candidates(candidates: list[Candidate], highlight: int | None = None) -> None:
     print(f"{StyleUI.BOLD}Found lyrics ({len(candidates)}):{StyleUI.RESET}")
-    colors = {"LRCLIB": StyleUI.BLUE, "NETEASE": StyleUI.MAGENTA, "SYNCEDLYRICS": StyleUI.CYAN}
+    colors = {"LRCLIB": StyleUI.BLUE, "NETEASE": StyleUI.MAGENTA, "QQMUSIC": StyleUI.GREEN,
+              "MEGALOBIZ": StyleUI.YELLOW, "SYNCEDLYRICS": StyleUI.CYAN}
     for index, cand in enumerate(candidates, 1):
         sync = badge("SYNC", StyleUI.GREEN) if cand.synced else badge("PLAIN", StyleUI.YELLOW)
         script = script_badge("latin" if cand.latin else "mixed" if cand.mixed else "original", align=True)
@@ -416,13 +426,18 @@ def prompt_romanization(lyrics: str) -> str:
 
 
 # --- menus -------------------------------------------------------------------
-def inspect_and_confirm(lyrics: str, source_label: str = "Selection") -> str | None:
-    """Return the confirmed text, or None when the user goes back."""
+def inspect_and_confirm(lyrics: str, source_label: str = "Selection", source_url: str = "") -> str | None:
+    """Return the confirmed text, or None when the user goes back.
+
+    *source_url* is the lyrics' page at their source; Megalobiz's terms ask
+    to link to it wherever its lyrics are shown."""
     current = lyrics
     show_preview = True
 
     while True:
         print(f"\n{StyleUI.BOLD}Status [{source_label}]:{StyleUI.RESET} {status_badges(current)}")
+        if source_url:
+            print(f"{StyleUI.GRAY}Source: {source_url}{StyleUI.RESET}")
         if show_preview:
             preview_text(current)
         show_preview = True
@@ -451,7 +466,7 @@ def inspect_and_confirm(lyrics: str, source_label: str = "Selection") -> str | N
             try:
                 edited = open_editor(current)
             except EditorError as exc:
-                error(str(exc))
+                report_editor_error(exc)
                 continue
             if edited == current:
                 info("No changes.")
@@ -538,11 +553,20 @@ def manage_existing_lyrics(meta: TrackMeta, cache: MetadataCache) -> Action:
 
         elif action == "e":
             try:
-                current = open_editor(current)
+                edited = open_editor(current)
             except EditorError as exc:
-                error(str(exc))
+                report_editor_error(exc)
                 continue
-            if current != saved and confirm("Save changes?", default=True) and persist(current):
+            # Compared with what went into the editor, not with the file: after
+            # a romanization that was not saved, closing the editor untouched
+            # asked "Save changes?" again.
+            if edited == current:
+                info("No changes.")
+                continue
+            current = edited
+            if current == saved:
+                info("Back to the lyrics in the file.")
+            elif confirm("Save changes?", default=True) and persist(current):
                 saved = current
 
         elif action == "r":
@@ -620,7 +644,7 @@ def select_lyrics(meta: TrackMeta, cache: providers.SearchCache) -> tuple[Action
 
             if entry is None:
                 try:
-                    with transient("Searching lyrics (LRCLIB + NetEase + syncedlyrics)... Ctrl+C cancels"):
+                    with transient("Searching lyrics (LRCLIB + NetEase + QQ Music)... Ctrl+C cancels"):
                         report = providers.collect_candidates(
                             current_title, current_artist, current_album, meta.duration
                         )
@@ -640,10 +664,12 @@ def select_lyrics(meta: TrackMeta, cache: providers.SearchCache) -> tuple[Action
                 fallback = []
                 if entry.report.alias_fallback:
                     fallback.append("as " + ", ".join(text.get_artist_aliases(text.clean_tag(current_artist) or current_artist)))
+                if entry.report.megalobiz_fallback:
+                    fallback.append("on Megalobiz")
                 if entry.report.scraper_fallback:
                     fallback.append("via syncedlyrics (" + ", ".join(config.get("api", "syncedlyrics_providers") or ["all sources"]) + ")")
                 if fallback:
-                    info(f"No synced lyrics from LRCLIB or NetEase - also searched {' and '.join(fallback)}.")
+                    info(f"No synced lyrics from LRCLIB, NetEase or QQ Music - also searched {' and '.join(fallback)}.")
 
         report = entry.report if entry else None
         hidden = report.unrelated if report else []
@@ -736,7 +762,7 @@ def select_lyrics(meta: TrackMeta, cache: providers.SearchCache) -> tuple[Action
             try:
                 manual = open_editor("")
             except EditorError as exc:
-                error(str(exc))
+                report_editor_error(exc)
                 continue
             if not manual.strip():
                 warn("No text entered.")
@@ -748,7 +774,7 @@ def select_lyrics(meta: TrackMeta, cache: providers.SearchCache) -> tuple[Action
             index = int(choice)
             selected = candidates[index - 1]
             confirmed = inspect_and_confirm(
-                selected.text, source_label=describe_candidate(index, selected)
+                selected.text, source_label=describe_candidate(index, selected), source_url=selected.url
             )
             if confirmed:
                 return Action.APPLY, confirmed
@@ -824,7 +850,10 @@ def find_automatic(meta: TrackMeta) -> tuple[SearchReport, Candidate | None]:
     # An exact LRCLIB record marked instrumental settles it as well.
     if candidate is not None or report.instrumental:
         return report, candidate
-    report = providers.collect_candidates(meta.title, meta.search_artist, meta.album, meta.duration)
+    # The full search takes over what the quick one found instead of sending
+    # the same /get lookup again.
+    report = providers.collect_candidates(meta.title, meta.search_artist, meta.album, meta.duration,
+                                          after_quick=report)
     return report, providers.pick_automatic(report, meta.duration)
 
 
@@ -838,6 +867,7 @@ def run_batch(files: list[Path], base_dir: Path, cache: MetadataCache,
     backup_root = backup_directory() if overwrite and not dry_run else None
     backed_up = 0
     searched = False
+    limit_pause = 0.0
 
     for index, path in enumerate(files, 1):
         meta = cache.get(path)
@@ -869,6 +899,17 @@ def run_batch(files: list[Path], base_dir: Path, cache: MetadataCache,
 
         with transient(f"{prefix}: searching..."):
             report, candidate = find_automatic(meta)
+        if candidate is None and report.rate_limited:
+            # Skipping track after track while LRCLIB refuses would waste the
+            # run: wait, longer each time the limit persists, and try again once.
+            limit_pause = min(max(limit_pause * 2, 10.0, *report.rate_limited.values()), 120.0)
+            print(f"{StyleUI.GRAY}{prefix}: {', '.join(report.rate_limited)} is limiting requests; "
+                  f"waiting {limit_pause:g}s, then trying again.{StyleUI.RESET}")
+            time.sleep(limit_pause)
+            with transient(f"{prefix}: searching..."):
+                report, candidate = find_automatic(meta)
+        if not report.rate_limited:
+            limit_pause = 0.0
 
         if candidate is None and report.instrumental:
             print(f"{StyleUI.GRAY}{prefix}: instrumental according to "
@@ -1148,9 +1189,12 @@ def run_interactive(files: list[Path], base_dir: Path, cache: MetadataCache) -> 
 
     while True:
         if show_tree:
-            display_tree(files, base_dir, cache)
+            # Back from a track with 't', Enter continues where the user was
+            # instead of starting the folder over.
+            resume = current_index if 0 <= current_index < len(files) else 0
+            display_tree(files, base_dir, cache, selected=resume + 1)
             print(f"\n{StyleUI.BOLD}Current folder:{StyleUI.RESET} {StyleUI.GRAY}{base_dir}{StyleUI.RESET}")
-            print_primary_action("Enter", "Start with the first track")
+            print_primary_action("Enter", f"Continue with track {resume + 1}" if resume else "Start with the first track")
             print_menu([
                 ("Navigate", [
                     (f"1-{len(files)}", "Jump to track"),
@@ -1179,7 +1223,7 @@ def run_interactive(files: list[Path], base_dir: Path, cache: MetadataCache) -> 
                 bulk_menu(files, base_dir, cache)
                 continue
             elif choice == "":
-                current_index = 0
+                current_index = resume
                 show_tree = False
             elif choice.isdigit() and 1 <= int(choice) <= len(files):
                 current_index = int(choice) - 1
@@ -1236,10 +1280,9 @@ def run_interactive(files: list[Path], base_dir: Path, cache: MetadataCache) -> 
         if action is Action.APPLY and payload:
             if not save_lyrics(path, payload):
                 continue
+            # The search stays cached: choosing "search online" on this track
+            # later shows the same results without asking the providers again.
             cache.invalidate(path)
-            search_cache.discard(providers.SearchCache.key(
-                meta.title, meta.search_artist, meta.album, meta.duration
-            ))
             success("✓ Lyrics successfully embedded into file.")
             move(Action.NEXT)
         elif action is Action.APPLY:

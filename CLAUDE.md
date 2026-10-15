@@ -13,7 +13,7 @@ run.py                   Launcher for checkouts (thin wrapper)
 lyrembed/
   cli.py                 Argument parsing, config loading, start-up
   app.py                 Directory scanning, navigation, menus, batch mode
-  providers.py           LRCLIB / NetEase / syncedlyrics, ranking, search cache
+  providers.py           LRCLIB / NetEase / QQ Music / Megalobiz / syncedlyrics, ranking, search cache
   tagging.py             Metadata reading, writing, mtime-keyed cache
   text.py                Tag cleaning, artist matching, script handling, romanization
   editor.py              External editor handling
@@ -27,7 +27,7 @@ tests/test_lyrembed.py     pytest suite
 
 ```bash
 pip install -e ".[all,dev]"     # all optional backends plus pytest/pyflakes
-pytest -q                       # 154 tests; 19 skip without the optional backends
+pytest -q                       # 179 tests; 21 skip without the optional backends
 python -m pyflakes lyrembed/ tests/ run.py
 python run.py --version
 python run.py ~/Music/Album --auto --dry-run --color never
@@ -71,7 +71,9 @@ conversion paths through it.
 
 **Non-letter characters are `KEEP`.** `text._char_class` tests `isalpha()`, not
 `isascii()`. Typographic punctuation (`…`, em dashes, curly quotes) must not
-count as a script, or purely Korean lyrics get reported as mixed.
+count as a script, or purely Korean lyrics get reported as mixed. The
+katakana middle dot `・` is `KEEP` too (Chinese and Korean lyrics use it in
+names), and `ー` counts as Kana only next to Kana (`text._char_classes`).
 
 **Latin vs. original is counted per lyric line, not per letter.** One Hangul
 or Han character holds a whole syllable, so a letter count let an English
@@ -111,7 +113,20 @@ are reported as provider notices, never silently dropped. The search endpoint is
 only (checked 2026-10-06 - same query, filler there, the right song on `pc`).
 The syncedlyrics engine runs in the second round too, and never with its own
 LRCLIB/NetEase sources (`api.syncedlyrics_providers`), which duplicated
-lyrembed's requests.
+lyrembed's requests. LRCLIB rate-limits per client (HTTP 429 via Cloudflare,
+seen 2026-10-15): 429 is not in the session's retry list, a refusal stops the
+track's queued LRCLIB queries and later rounds (`SearchReport.rate_limited`),
+at most `_LRCLIB_PARALLEL` requests run at once, and batch mode's full search
+reuses the quick `/get` result (`after_quick`) instead of asking again.
+QQ Music follows NetEase's rules (filler for unknown songs, so `_fit` decides
+which lyrics to fetch). It has no instrumental flag: its lyrics are then the
+notice `此歌曲为没有填词的纯音乐，请您欣赏`. The syncedlyrics sources were all
+dead on 2026-10-15 (Musixmatch filler for every query, Megalobiz 410, Genius
+403). Megalobiz is queried directly through its public API instead, and only
+in the second round: 30 requests a minute and 1,000 a day per IP. After a 429
+it is skipped until `Retry-After` passes (`_megalobiz_blocked_until`) and is
+never put into `rate_limited`, so a batch run does not wait for a daily limit.
+Its terms ask to link to the lyric's page: `Candidate.url`, shown on inspect.
 
 **Provider results are merged across concurrent responses.** `/get` and
 `/search` often return the same LRCLIB record. Attributes derived from which

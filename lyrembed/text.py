@@ -321,6 +321,8 @@ def has_timestamps(text: str) -> bool:
 _HANGUL_RANGES = ((0x1100, 0x11FF), (0x3130, 0x318F), (0xA960, 0xA97F), (0xAC00, 0xD7A3))
 _KANA_RANGES = ((0x3040, 0x309F), (0x30A0, 0x30FF), (0x31F0, 0x31FF), (0xFF66, 0xFF9D))
 _HAN_RANGES = ((0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF))
+_MIDDLE_DOTS = "・･"
+_PROLONGED_MARKS = "ーｰ"
 
 KEEP = "keep"
 HANGUL = "hangul"
@@ -337,6 +339,11 @@ def _char_class(char: str) -> str:
     code = ord(char)
     if _in_ranges(code, _HANGUL_RANGES):
         return HANGUL
+    # The katakana middle dot separates names and titles in Chinese and
+    # Korean lyrics as well (约翰・史密斯, 사랑・이별); as Kana it made them
+    # look Japanese, and Han next to it was read with Japanese readings.
+    if char in _MIDDLE_DOTS:
+        return KEEP
     if _in_ranges(code, _KANA_RANGES) or char in "ーゝゞヽヾ":
         return KANA
     if _in_ranges(code, _HAN_RANGES) or char == "々":
@@ -352,11 +359,26 @@ def _char_class(char: str) -> str:
     return OTHER
 
 
+def _char_classes(text: str) -> list[str]:
+    """_char_class for every character, with the prolonged sound mark ー
+    judged by its neighbours: it is Kana only after or before Kana. Chinese
+    text sometimes uses it as a dash, which made the whole song Japanese."""
+    kinds = [_char_class(char) for char in text]
+    marks = [i for i, char in enumerate(text) if char in _PROLONGED_MARKS]
+    for i in marks:
+        kinds[i] = KEEP
+    for i in marks:
+        before = next((kinds[j] for j in range(i - 1, -1, -1) if text[j] not in _PROLONGED_MARKS), None)
+        after = next((kinds[j] for j in range(i + 1, len(text)) if text[j] not in _PROLONGED_MARKS), None)
+        if KANA in (before, after):
+            kinds[i] = KANA
+    return kinds
+
+
 def segment_line(line: str) -> list[tuple[str, str]]:
     """Split *line* into maximal runs of one script class."""
     runs: list[tuple[str, str]] = []
-    for char in line:
-        kind = _char_class(char)
+    for char, kind in zip(line, _char_classes(line)):
         if runs and runs[-1][0] == kind:
             runs[-1] = (kind, runs[-1][1] + char)
         else:
@@ -463,7 +485,7 @@ def _line_looks_japanese(runs: list[tuple[str, str]]) -> bool:
 
 
 def contains_kana(text: str) -> bool:
-    return any(_char_class(char) == KANA for char in text)
+    return KANA in _char_classes(text)
 
 
 def _resolve_han(runs: list[tuple[str, str]], index: int, han_default: str,
@@ -742,11 +764,19 @@ def romanize_lyrics(lyrics: str, lang: str, han_default: str = "zh",
     lines = lyrics.splitlines()
     converted = []
     for index, line in enumerate(lines):
+        if keep_original and _LRC_META_REGEX.match(line):
+            # A second [ti:] or [al:] header is no translation pair.
+            converted.append(line)
+            continue
         match = TIMESTAMP_REGEX.match(line)
         if match:
             result = f"{match.group(1)}{convert(match.group(2))}"
         else:
             result = convert(line)
+        if keep_original and result.split() == line.split():
+            # Nothing romanized, only spacing tidied: an English line with
+            # a trailing space must not show up twice.
+            result = line
         if keep_original and result != line:
             converted.append(line)
             # Already followed by its romanization (romanized before with this
@@ -770,6 +800,11 @@ _CREDIT_LINE_REGEX = re.compile(
     r"^\s*(?:\[[^\]]*\]\s*)*(?P<label>[\u3400-\u9fff]{1,4}|OP|SP)\s*[:：]",
     re.IGNORECASE,
 )
+
+
+def is_header_line(line: str) -> bool:
+    """True for LRC header tags such as '[ti:...]', '[ar:...]' or '[offset:0]'."""
+    return bool(_LRC_META_REGEX.match(line))
 
 
 def is_credit_line(line: str) -> bool:
