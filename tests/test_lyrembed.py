@@ -9,18 +9,18 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from lyrembed import config, editor, providers, tagging, text  # noqa: E402
-from lyrembed import app, ui  # noqa: E402
-from lyrembed.app import natural_key  # noqa: E402
+from lyrembed import config, providers, tagging, text  # noqa: E402
+from lyrembed import batch, core, ui  # noqa: E402
+from lyrembed.core import natural_key  # noqa: E402
 
 
 # --- config merging ----------------------------------------------------------
 def test_partial_user_config_keeps_defaults(tmp_path):
     path = tmp_path / "config.json"
-    path.write_text('{"settings": {"preview_lines": 40}}', encoding="utf-8")
+    path.write_text('{"settings": {"search_cache_entries": 40}}', encoding="utf-8")
     merged, warnings = config.load_config(path)
     assert warnings == []
-    assert merged["settings"]["preview_lines"] == 40
+    assert merged["settings"]["search_cache_entries"] == 40
     # Sections omitted by the user must survive the merge.
     assert "non_latin_ratio_threshold" in merged["settings"]
     assert "ignore_words_artist_match" in merged["cleaning"]
@@ -114,18 +114,6 @@ def test_mixed_label_needs_two_asian_scripts(cfg):
     candidate = providers.Candidate.build(provider="LRCLIB", artist="A", title="T", album="",
                                           text="[00:01.00]사랑해\n[00:02.00]ありがとう")
     assert candidate.mixed and not candidate.latin
-
-
-def test_candidate_list_shows_the_mixed_badge(cfg, capsys):
-    cfg["settings"]["color"] = "never"
-    ui.apply_color_settings()
-    found = [providers.Candidate.build(provider="LRCLIB", artist="A", title=t, album="", text=lyrics)
-             for t, lyrics in (("one", "사랑해 我爱你 ありがとう"), ("two", "사랑해"), ("three", "saranghae"))]
-    app.print_candidates(found)
-    lines = capsys.readouterr().out.splitlines()
-    assert "[MIXED]" in next(l for l in lines if "one" in l)
-    assert "[ORIG ]" in next(l for l in lines if "two" in l)
-    assert "[LATIN]" in next(l for l in lines if "three" in l)
 
 
 def test_detect_script():
@@ -354,26 +342,6 @@ def test_no_collision_between_converted_and_kept_text():
 
 
 # --- editor ------------------------------------------------------------------
-def test_editor_command_splits_arguments(monkeypatch):
-    monkeypatch.setenv("EDITOR", "code --wait")
-    assert editor.editor_command() == ["code", "--wait"]
-
-
-def test_editor_roundtrip(monkeypatch, tmp_path):
-    script = tmp_path / "fake_editor.py"
-    script.write_text(
-        "import sys\nopen(sys.argv[1], 'w', encoding='utf-8').write('edited')\nsys.exit(1)\n",
-        encoding="utf-8",
-    )
-    monkeypatch.setenv("EDITOR", f"{sys.executable} {script}")
-    # A non-zero exit code must not abort the session.
-    assert editor.open_editor("original") == "edited"
-
-
-def test_missing_editor_raises_editor_error(monkeypatch):
-    monkeypatch.setenv("EDITOR", "definitely-not-an-editor-binary")
-    with pytest.raises(editor.EditorError):
-        editor.open_editor("x")
 
 
 # --- ranking -----------------------------------------------------------------
@@ -406,9 +374,9 @@ def test_enter_saves_the_synced_match_not_the_exact_plain_one(cfg):
     plain = _built(provider="LRCLIB", artist="A", title="Song", duration=200, exact=True, text="la la")
     synced = _built(provider="NETEASE", artist="A", title="Song", duration=201)
     report = providers.SearchReport(candidates=sorted([plain, synced], key=providers.rank_key))
-    assert report.candidates[app.default_highlight(report, 200) - 1] is synced
+    assert report.candidates[core.default_highlight(report, 200) - 1] is synced
     only_plain = providers.SearchReport(candidates=[plain])
-    assert app.default_highlight(only_plain, 200) == 1
+    assert core.default_highlight(only_plain, 200) == 1
 
 
 def test_prefer_latin_is_off_by_default_and_then_neutral(cfg):
@@ -470,12 +438,12 @@ def test_prefer_album_artist_searches_with_the_album_artist(cfg, tmp_path, monke
     searched = []
     monkeypatch.setattr(providers, "collect_candidates",
                         lambda title, artist, *a, **k: searched.append(artist) or providers.SearchReport())
-    app.find_automatic(meta)
+    core.find_automatic(meta)
     assert set(searched) == {"Member A, Member B"}          # off by default
 
     searched.clear()
     cfg["settings"]["prefer_album_artist"] = True
-    app.find_automatic(meta)
+    core.find_automatic(meta)
     assert set(searched) == {"Group"}
 
 
@@ -586,69 +554,20 @@ def _menu_groups():
     ]
 
 
-def test_menu_lists_every_key_and_group(capsys):
-    ui.print_menu(_menu_groups())
-    out = capsys.readouterr().out
-    for key in ("e", "r", "v", "p", "s", "q"):
-        assert f"[{key}]" in out
-    assert "Edit" in out and "Navigate" in out
-
-
-def test_menu_columns_adapt_to_terminal_width(monkeypatch, capsys):
-    def rows_for(width):
-        monkeypatch.setattr(ui, "terminal_width", lambda default=80: width)
-        ui.print_menu(_menu_groups())
-        out = capsys.readouterr().out
-        return [ln for ln in out.splitlines() if "[" in ln]
-
-    wide = rows_for(200)
-    narrow = rows_for(30)
-    # A narrow terminal must break into more rows rather than overflow.
-    assert len(narrow) > len(wide)
-
-
-def test_menu_never_exceeds_the_terminal_width(monkeypatch, capsys):
-    for width in (30, 60, 100):
-        monkeypatch.setattr(ui, "terminal_width", lambda default=80, w=width: w)
-        ui.print_menu(_menu_groups())
-        for line in capsys.readouterr().out.splitlines():
-            plain = re.sub(r"\x1b\[[0-9;]*m", "", line)
-            assert len(plain) <= width, (width, plain)
-
-
-def test_menu_handles_a_single_group(capsys):
-    ui.print_menu([("Navigate", [("q", "Quit")])])
-    assert "[q]" in capsys.readouterr().out
-
-
 # --- candidate selection UI --------------------------------------------------
 def test_describe_candidate_names_the_entry():
     cand = _cand(artist="IU", title="Love Wins All", synced=True, exact=True,
                  has_duration=True, diff=0, duration=200, track_duration=200)
-    line = app.describe_candidate(1, cand)
+    line = core.describe_candidate(1, cand)
     assert line.startswith("#1 IU - Love Wins All")
     assert "exact" in line and "synced" in line
     assert "duration OK" in line and "±0s" not in line
 
 
 def test_describe_candidate_without_duration():
-    line = app.describe_candidate(3, _cand(artist="", title="Song", synced=False))
+    line = core.describe_candidate(3, _cand(artist="", title="Song", synced=False))
     assert line.startswith("#3 Song")
     assert "plain" in line and "duration" not in line
-
-
-def test_highlight_marks_only_the_selected_row(capsys):
-    candidates = [_cand(title="A", exact=True), _cand(title="B"), _cand(title="C")]
-    app.print_candidates(candidates, highlight=2)
-    lines = [ln for ln in capsys.readouterr().out.splitlines() if "[" in ln]
-    marked = [ln for ln in lines if ln.startswith("\u25b6")]
-    assert len(marked) == 1
-    assert "B" in marked[0]
-
-
-def test_no_highlight_marks_nothing(capsys):
-    app.print_candidates([_cand(title="A"), _cand(title="B")], highlight=None)
-    assert "\u25b6" not in capsys.readouterr().out
 
 
 def test_exact_match_is_preselected_only_when_first_result_is_exact():
@@ -768,19 +687,6 @@ def cfg(monkeypatch):
     return fresh
 
 
-def _scripted_input(monkeypatch, answers):
-    """Feed menu answers to app.safe_input; running out ends the program."""
-    feed = iter(answers)
-
-    def fake(prompt="", default_text=""):
-        try:
-            return next(feed)
-        except StopIteration:
-            raise ui.QuitRequested(99) from None
-
-    monkeypatch.setattr(app, "safe_input", fake)
-
-
 # launcher
 def test_launcher_explains_a_missing_package(tmp_path):
     # Named lyrembed.py, the launcher imported itself when lyrembed/ was missing
@@ -810,17 +716,17 @@ def test_user_config_comes_before_a_checkout_config(tmp_path, monkeypatch):
 def test_wrong_types_fall_back_to_defaults(tmp_path):
     path = tmp_path / "config.json"
     path.write_text(
-        '{"settings": {"supported_extensions": ".flac", "preview_lines": "many",'
+        '{"settings": {"supported_extensions": ".flac", "search_cache_entries": "many",'
         ' "prefer_latin": 1, "colour": "never"}, "api": {"batch_delay_seconds": 2}}',
         encoding="utf-8",
     )
     merged, warnings = config.load_config(path)
     assert merged["settings"]["supported_extensions"] == config.DEFAULT_CONFIG["settings"]["supported_extensions"]
-    assert merged["settings"]["preview_lines"] == 16
+    assert merged["settings"]["search_cache_entries"] == 64
     assert merged["settings"]["prefer_latin"] is False
     assert merged["api"]["batch_delay_seconds"] == 2      # an int is a valid float
     joined = " ".join(warnings)
-    assert "supported_extensions" in joined and "preview_lines" in joined
+    assert "supported_extensions" in joined and "search_cache_entries" in joined
     assert "settings.colour" in joined                    # typo reported, not ignored
 
 
@@ -896,40 +802,9 @@ def test_batch_only_flags_require_auto(capsys):
 def test_batch_mode_never_prompts_for_a_path(tmp_path, monkeypatch, cfg):
     # Run from cron, a prompt either blocks or reads EOF and exited with 0.
     monkeypatch.setattr(config, "load_config", lambda path=None: (cfg, []))
-
-    def no_prompt(*args, **kwargs):
-        raise AssertionError("batch mode prompted")
-
-    monkeypatch.setattr(app, "safe_input", no_prompt)
+    monkeypatch.setattr("builtins.input", lambda *a: (_ for _ in ()).throw(AssertionError("batch mode prompted")))
     assert cli.main(["--auto", str(tmp_path / "missing")]) == 2
     assert cli.main(["--auto", str(tmp_path)]) == 2       # exists, but empty
-
-
-def test_quit_and_interrupt_exit_codes(tmp_path, monkeypatch, cfg):
-    monkeypatch.setattr(config, "load_config", lambda path=None: (cfg, []))
-    _make_flac(tmp_path / "a.flac")
-
-    def quit_now(*args, **kwargs):
-        raise ui.QuitRequested(0)
-
-    monkeypatch.setattr(app, "run_interactive", quit_now)
-    assert cli.main([str(tmp_path)]) == 0
-
-    def interrupt(*args, **kwargs):
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(app, "run_interactive", interrupt)
-    assert cli.main([str(tmp_path)]) == 130
-
-
-def test_end_of_input_quits_instead_of_exiting_the_interpreter(monkeypatch):
-    def eof(prompt=""):
-        raise EOFError
-
-    monkeypatch.setattr("builtins.input", eof)
-    with pytest.raises(ui.QuitRequested) as raised:
-        ui.safe_input("> ")
-    assert raised.value.code == 0
 
 
 # scanning and tagging
@@ -937,7 +812,7 @@ def test_unsupported_configured_extension_is_skipped_not_fatal(tmp_path, cfg):
     cfg["settings"]["supported_extensions"] = [".flac", ".wav"]
     (tmp_path / "song.wav").write_bytes(b"RIFF")
     _make_flac(tmp_path / "song.flac")
-    files, err = app.find_music_files(tmp_path)
+    files, err = core.find_music_files(tmp_path)
     assert err is None
     assert [f.name for f in files] == ["song.flac"]
     # Reading a file of that type directly is an error on the track, not a crash.
@@ -948,39 +823,10 @@ def test_max_file_count_zero_means_unlimited(tmp_path, cfg):
     for n in range(3):
         _make_flac(tmp_path / f"{n}.flac")
     cfg["settings"]["max_file_count"] = 2
-    assert app.find_music_files(tmp_path) == (None, "TOO_MANY_FILES")
+    assert core.find_music_files(tmp_path) == (None, "TOO_MANY_FILES")
     cfg["settings"]["max_file_count"] = 0
-    files, err = app.find_music_files(tmp_path)
+    files, err = core.find_music_files(tmp_path)
     assert err is None and len(files) == 3
-
-
-def test_path_completion_handles_brackets(tmp_path):
-    (tmp_path / "Album [FLAC]" / "CD1").mkdir(parents=True)
-    match = ui.complete_path(str(tmp_path / "Album [FLAC]" / "C"), 0)
-    assert match == str(tmp_path / "Album [FLAC]" / "CD1") + os.sep
-
-
-def test_failed_sidecar_is_not_a_failed_embed(tmp_path, cfg):
-    from mutagen.flac import FLAC
-
-    cfg["settings"]["write_sidecar_lrc"] = True
-    src = _make_flac(tmp_path / "song.flac")
-    (tmp_path / "song.lrc").mkdir()          # makes the sidecar unwritable
-    with pytest.raises(tagging.SidecarError):
-        tagging.embed_lyrics(src, "[00:01.00]x")
-    assert FLAC(src)["LYRICS"][0] == "[00:01.00]x"
-    assert app.save_lyrics(src, "[00:02.00]y") is True
-
-
-def test_stale_sidecar_is_reported(tmp_path, cfg, capsys):
-    src = _make_flac(tmp_path / "song.flac")
-    assert tagging.stale_sidecar(src) is None
-    (tmp_path / "song.lrc").write_text("old", encoding="utf-8")
-    assert tagging.stale_sidecar(src) == tmp_path / "song.lrc"
-    app.save_lyrics(src, "new")
-    assert "song.lrc" in capsys.readouterr().out
-    cfg["settings"]["write_sidecar_lrc"] = True
-    assert tagging.stale_sidecar(src) is None   # kept in sync, so not stale
 
 
 def test_id3_version_of_the_file_is_kept(tmp_path, cfg):
@@ -1010,54 +856,15 @@ def test_sylt_frames_are_read_as_lrc():
 def test_overwritten_lyrics_are_backed_up(tmp_path):
     base = tmp_path / "music"
     track = base / "Album" / "01.flac"
-    target = app.backup_lyrics(tmp_path / "backup", base, track, "[00:01.00]old")
+    target = core.backup_lyrics(tmp_path / "backup", base, track, "[00:01.00]old")
     assert target == tmp_path / "backup" / "Album" / "01.flac.lrc"
     assert target.read_text(encoding="utf-8") == "[00:01.00]old"
 
 
 # navigation
-def test_stepping_back_skips_an_unreadable_track_backwards(monkeypatch, capsys, cfg):
-    files = [Path(f"/music/{n}.flac") for n in (1, 2, 3)]
-    metas = {
-        files[0]: tagging.TrackMeta(path=files[0], title="One"),        # no artist
-        files[1]: tagging.TrackMeta(path=files[1], error="broken"),
-        files[2]: tagging.TrackMeta(path=files[2], title="Three"),
-    }
-
-    class FakeCache:
-        def get(self, path):
-            return metas[path]
-
-    # Jump to track 3, step back: the unreadable track 2 must lead to track 1.
-    _scripted_input(monkeypatch, ["3", "p", "q"])
-    with pytest.raises(ui.QuitRequested):
-        app.run_interactive(files, Path("/music"), FakeCache())
-    banners = re.findall(r"\[(\d)/3\]", capsys.readouterr().out)
-    assert banners == ["3", "2", "1"]
-
-
-def test_ctrl_c_cancels_only_the_search(monkeypatch, capsys, cfg):
-    def interrupted(*args, **kwargs):
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr(providers, "collect_candidates", interrupted)
-    _scripted_input(monkeypatch, ["s"])
-    meta = tagging.TrackMeta(path=Path("/m/a.flac"), title="T", artist="A")
-    cache = providers.SearchCache()
-    assert app.select_lyrics(meta, cache) == (app.Action.NEXT, None)
-    out = capsys.readouterr().out
-    assert "Search cancelled" in out and "No matching results" not in out
-    assert len(cache) == 0                        # nothing half-finished cached
 
 
 # providers
-def test_duration_ok_needs_both_lengths():
-    unknown_track = _cand(has_duration=True, duration=200, track_duration=0)
-    assert app.duration_label(unknown_track) == "3:20"
-    assert "duration" not in app.describe_candidate(1, unknown_track)
-    known = _cand(has_duration=True, duration=200, track_duration=200)
-    assert app.duration_label(known) == "Duration OK"
-    assert app.duration_label(_cand(has_duration=True, duration=203, track_duration=200, diff=3)) == "±3s"
 
 
 def test_syncedlyrics_results_are_unverified(monkeypatch, cfg):
@@ -1169,24 +976,11 @@ def test_batch_skips_the_full_search_when_get_is_confident(monkeypatch, cfg):
 
     monkeypatch.setattr(providers, "collect_candidates", fake_collect)
     meta = tagging.TrackMeta(path=Path("/m/a.flac"), title="T", artist="A", duration=200)
-    assert app.find_automatic(meta)[1] is exact
+    assert core.find_automatic(meta)[1] is exact
     assert calls == [True]
 
 
 # editor
-def test_visual_takes_precedence_over_editor(monkeypatch):
-    monkeypatch.setenv("EDITOR", "nano")
-    monkeypatch.setenv("VISUAL", "code --wait")
-    assert editor.editor_command() == ["code", "--wait"]
-
-
-def test_detached_gui_editor_is_reported(monkeypatch, tmp_path):
-    script = tmp_path / "detached.py"
-    script.write_text("pass\n", encoding="utf-8")        # returns at once, no edit
-    monkeypatch.delenv("VISUAL", raising=False)
-    monkeypatch.setenv("EDITOR", f"{sys.executable} {script}")
-    with pytest.raises(editor.EditorError, match="--wait"):
-        editor.open_editor("original")
 
 
 # romanization layout and terminal width
@@ -1213,48 +1007,6 @@ def _yellow_brackets(out: str) -> list[str]:
     """The keys shown with yellow brackets, i.e. the selected choices."""
     yellow = re.escape(ui.StyleUI.YELLOW + ui.StyleUI.BOLD + "[" + ui.StyleUI.RESET)
     return [m.strip() for m in re.findall(yellow + r"(?:\x1b\[[0-9;]*m)*([^\x1b\]]+)", out)]
-
-
-def test_selected_candidate_has_yellow_brackets(colors, capsys):
-    found = [providers.Candidate.build(provider="LRCLIB", artist="A", title=t, album="", text="la")
-             for t in ("one", "two", "three")]
-    app.print_candidates(found, highlight=2)
-    assert _yellow_brackets(capsys.readouterr().out) == ["2"]
-    app.print_candidates(found)
-    assert _yellow_brackets(capsys.readouterr().out) == []
-
-
-def test_preselected_choices_have_yellow_brackets(cfg, colors, monkeypatch, capsys):
-    _scripted_input(monkeypatch, ["c", "c", "c"])
-    app.prompt_layout()
-    assert _yellow_brackets(capsys.readouterr().out) == ["1"]
-    cfg["settings"]["romanization_layout"] = "below"
-    app.prompt_layout()
-    assert _yellow_brackets(capsys.readouterr().out) == ["2"]
-    app.prompt_han_default()
-    assert _yellow_brackets(capsys.readouterr().out) == ["1"]
-
-
-def test_tree_marks_the_track_enter_starts_with(colors, tmp_path, capsys):
-    files = [_make_flac(tmp_path / f"{n}.flac") for n in ("a", "b")]
-    app.display_tree(files, tmp_path, tagging.MetadataCache())
-    assert _yellow_brackets(capsys.readouterr().out) == ["1"]
-
-
-def test_detected_romanization_has_yellow_brackets(colors, monkeypatch, capsys):
-    _scripted_input(monkeypatch, ["c"])
-    app.prompt_romanization("[00:01.00]사랑해")
-    expected = str(list(text.ROMANIZERS).index("ko") + 1)
-    assert _yellow_brackets(capsys.readouterr().out) == [expected]
-
-
-def test_layout_setting_decides_what_enter_picks(cfg, monkeypatch):
-    _scripted_input(monkeypatch, ["", "1"])
-    assert app.prompt_layout() is False               # default: replace
-    cfg["settings"]["romanization_layout"] = "below"
-    _scripted_input(monkeypatch, ["", "1"])
-    assert app.prompt_layout() is True                # Enter keeps the original
-    assert app.prompt_layout() is False               # an explicit 1 still replaces
 
 
 def test_truncation_counts_terminal_columns():
@@ -1303,65 +1055,11 @@ def state_dir(tmp_path, monkeypatch):
     return state
 
 
-def test_selection_parsing():
-    assert app.parse_selection("", 5) == [0, 1, 2, 3, 4]
-    assert app.parse_selection("1-3, 5", 5) == [0, 1, 2, 4]
-    assert app.parse_selection("4-2 2", 5) == [1, 2, 3]
-    assert app.parse_selection("0", 5) is None
-    assert app.parse_selection("6", 5) is None
-    assert app.parse_selection("1;x", 5) is None
-
-
 @pytest.mark.skipif(not (text.HAS_KOREAN or text.HAS_ANYASCII),
                     reason="korean-romanizer or anyascii required")
 def test_keeping_the_original_twice_does_not_double_lines():
     once = text.romanize_lyrics("[00:01.00]사랑해\n[00:02.00]hello", "ko", keep_original=True)
     assert text.romanize_lyrics(once, "ko", keep_original=True) == once
-
-
-@pytest.mark.skipif(not text.HAS_KOREAN, reason="korean-romanizer required")
-def test_bulk_romanize_backs_up_and_is_idempotent(cfg, tmp_path, state_dir):
-    cfg["settings"]["romanization_layout"] = "below"
-    music = tmp_path / "music"
-    music.mkdir()
-    korean = _flac_with_lyrics(music / "a.flac", "[00:01.00]사랑해")
-    latin = _flac_with_lyrics(music / "b.flac", "[00:01.00]hello there")
-    cache = tagging.MetadataCache()
-
-    app.run_bulk_action("2", [korean, latin], music, cache)
-    lyrics = tagging.read_metadata(korean).lyrics
-    assert lyrics.splitlines()[0] == "[00:01.00]사랑해"
-    assert lyrics.splitlines()[1].startswith("[00:01.00]sa")
-    assert tagging.read_metadata(latin).lyrics == "[00:01.00]hello there"
-    backups = list(state_dir.rglob("a.flac.lrc"))
-    assert len(backups) == 1 and backups[0].read_text(encoding="utf-8") == "[00:01.00]사랑해"
-
-    app.run_bulk_action("2", [korean], music, tagging.MetadataCache())
-    assert tagging.read_metadata(korean).lyrics == lyrics
-
-
-def test_tree_bulk_delete_with_selection(cfg, tmp_path, state_dir, monkeypatch):
-    music = tmp_path / "music"
-    music.mkdir()
-    files = [_flac_with_lyrics(music / f"{n}.flac", f"[00:01.00]{n}") for n in ("a", "b", "c")]
-    # tree: a = bulk, 4 = delete, tracks 1 and 3, confirm; then quit
-    _scripted_input(monkeypatch, ["a", "4", "1,3", "y"])
-    monkeypatch.setattr(ui, "safe_input", app.safe_input)   # confirm() reads through ui
-    with pytest.raises(ui.QuitRequested):
-        app.run_interactive(files, music, tagging.MetadataCache())
-    assert [tagging.read_metadata(f).lyrics for f in files] == ["", "[00:01.00]b", ""]
-    assert len(list(state_dir.rglob("*.lrc"))) == 2
-
-
-def test_bulk_sidecar_export_backs_up_a_differing_sidecar(cfg, tmp_path, state_dir):
-    music = tmp_path / "music"
-    music.mkdir()
-    track = _flac_with_lyrics(music / "a.flac", "[00:01.00]new")
-    tagging.sidecar_path(track).write_text("[00:01.00]old", encoding="utf-8")
-
-    app.run_bulk_action("3", [track], music, tagging.MetadataCache())
-    assert tagging.sidecar_path(track).read_text(encoding="utf-8") == "[00:01.00]new"
-    assert [p.read_text(encoding="utf-8") for p in state_dir.rglob("*.lrc")] == ["[00:01.00]old"]
 
 
 # instrumental tracks and unrelated results
@@ -1555,7 +1253,7 @@ def test_batch_skips_instrumental_tracks_without_searching(cfg, tmp_path, monkey
     audio.save()
     monkeypatch.setattr(providers, "collect_candidates",
                         lambda *a, **k: pytest.fail("instrumental tracks must not be searched"))
-    assert app.run_batch([inst, zxx], tmp_path, tagging.MetadataCache(), False, False) == 0
+    assert batch.run_batch([inst, zxx], tmp_path, tagging.MetadataCache(), False, False) == 0
     out = capsys.readouterr().out
     assert "title says 'Inst.'" in out and "'zxx'" in out
 
@@ -1599,39 +1297,9 @@ def test_musicbrainz_verdicts(cfg, monkeypatch, tmp_path):
     audio.save()
     meta = tagging.read_metadata(path)
     assert meta.recording_id == "zxx"
-    assert app.instrumental_hint(meta) is None              # off by default
+    assert core.instrumental_hint(meta) == (None, None)     # off by default
     cfg["api"]["enable_musicbrainz"] = True
-    assert app.instrumental_hint(meta) == "MusicBrainz: work without lyrics"
-
-
-def test_unrelated_results_are_shown_on_request(cfg, monkeypatch, capsys):
-    filler = _built(artist="朴树", title="平凡之路", duration=300)
-    _fake_providers(monkeypatch, [filler], instrumental={"LRCLIB": "exact match"})
-    _scripted_input(monkeypatch, ["u", "s"])
-    meta = tagging.TrackMeta(path=Path("x.flac"), title="Opening", artist="Orchestra", duration=200)
-    action, _ = app.select_lyrics(meta, providers.SearchCache())
-    out = capsys.readouterr().out
-    assert action is app.Action.NEXT
-    assert "Marked as instrumental by LRCLIB (exact match)" in out
-    first, _, second = out.partition("hidden - 'u' shows them")
-    assert "平凡之路" not in first and "平凡之路" in second and "≠artist" in second
-
-
-def test_syncedlyrics_results_are_labelled_by_name(cfg, monkeypatch, capsys):
-    # They used to be labelled "MULTI", which said nothing about the source.
-    class FakeEngine:
-        @staticmethod
-        def search(query, allow_plain_format=True):
-            return "[00:01.00]la la"
-
-    monkeypatch.setattr(providers, "HAS_SYNCEDLYRICS", True)
-    monkeypatch.setattr(providers, "syncedlyrics", FakeEngine, raising=False)
-    found = providers.query_syncedlyrics("Song", "Artist", providers.SearchReport())
-    cfg["settings"]["color"] = "never"
-    ui.apply_color_settings()
-    app.print_candidates(found)
-    out = capsys.readouterr().out
-    assert "[SYNCEDLYRICS]" in out and "?unverified" in out and "MULTI" not in out
+    assert core.instrumental_hint(meta) == ("MusicBrainz: work without lyrics", None)
 
 
 def test_netease_results_are_labelled_in_upper_case(cfg, monkeypatch):
@@ -1752,21 +1420,6 @@ def test_netease_filler_and_refusals_are_reported(cfg, monkeypatch):
     assert "code -462" in report.errors["NetEase"][0]
 
 
-def test_search_menu_offers_a_search_with_aliases(cfg, monkeypatch, capsys):
-    calls = []
-
-    def collect(title, artist, album, duration, quick=False, aliases=None):
-        calls.append(aliases)
-        return providers.SearchReport(aliases_searched=bool(aliases))
-    monkeypatch.setattr(providers, "collect_candidates", collect)
-    _scripted_input(monkeypatch, ["a", "s"])
-    meta = tagging.TrackMeta(path=Path("x.flac"), title="Flashy", artist="P1Harmony", duration=189)
-    app.select_lyrics(meta, providers.SearchCache())
-    out = capsys.readouterr().out
-    assert calls == [None, True]
-    assert "Search with aliases too" in out and "피원하모니" in out
-
-
 # request rounds
 class _LrclibSession:
     """Records LRCLIB requests; /get answers 404 when *get_found* is false."""
@@ -1853,51 +1506,20 @@ def test_syncedlyrics_skips_the_sources_lyrembed_asks_itself(cfg, monkeypatch):
     assert seen == [["Musixmatch", "Genius"]]
 
 
-def test_enter_applies_inspected_lyrics(monkeypatch):
-    _scripted_input(monkeypatch, [""])
-    assert app.inspect_and_confirm("[00:01.00]la") == "[00:01.00]la"
-
-
-def test_enter_saves_edited_lyrics(cfg, tmp_path, monkeypatch):
-    track = _flac_with_lyrics(tmp_path / "a.flac", "[00:01.00]old")
-    monkeypatch.setattr(app, "open_editor", lambda text: "[00:01.00]new")
-    # e = edit, Enter = save, s = next track
-    _scripted_input(monkeypatch, ["e", "", "s"])
-    monkeypatch.setattr(ui, "safe_input", app.safe_input)
-    meta = tagging.read_metadata(track)
-    assert app.manage_existing_lyrics(meta, tagging.MetadataCache()) is app.Action.NEXT
-    assert tagging.read_metadata(track).lyrics == "[00:01.00]new"
-
-
-def test_enter_on_a_result_can_open_its_preview_first(cfg, monkeypatch, capsys):
-    synced = _built(provider="LRCLIB", artist="A", title="Song", duration=200)
-    _fake_providers(monkeypatch, [synced])
-    meta = tagging.TrackMeta(path=Path("x.flac"), title="Song", artist="A", duration=200)
-
-    _scripted_input(monkeypatch, [""])                     # default: saves at once
-    assert app.select_lyrics(meta, providers.SearchCache()) == (app.Action.APPLY, synced.text)
-
-    cfg["settings"]["enter_opens_preview"] = True
-    _scripted_input(monkeypatch, ["", "b", "s"])           # Enter = inspect, b = back
-    assert app.select_lyrics(meta, providers.SearchCache()) == (app.Action.NEXT, None)
-    out = capsys.readouterr().out
-    assert "[Enter] Inspect #1" in out and "Apply these lyrics" in out
-
-
 def test_config_from_before_the_rename_is_still_read(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
     legacy = tmp_path / "lrckit" / "config.json"
     legacy.parent.mkdir()
-    legacy.write_text('{"settings": {"preview_lines": 5}}', encoding="utf-8")
+    legacy.write_text('{"settings": {"search_cache_entries": 5}}', encoding="utf-8")
     merged, warnings = config.load_config(None)
-    assert merged["settings"]["preview_lines"] == 5
+    assert merged["settings"]["search_cache_entries"] == 5
     assert any("move it to" in w and "lyrembed" in w for w in warnings)
 
     current = tmp_path / "lyrembed" / "config.json"
     current.parent.mkdir()
-    current.write_text('{"settings": {"preview_lines": 7}}', encoding="utf-8")
+    current.write_text('{"settings": {"search_cache_entries": 7}}', encoding="utf-8")
     merged, warnings = config.load_config(None)
-    assert merged["settings"]["preview_lines"] == 7 and warnings == []
+    assert merged["settings"]["search_cache_entries"] == 7 and warnings == []
 
 
 # batch romanization
@@ -1910,7 +1532,7 @@ def _batch_track(tmp_path: Path, monkeypatch, text_found: str) -> Path:
     audio["title"], audio["artist"] = "Love wins all", "IU"
     audio.save()
     found = _cand(synced=True, exact=True, text=text_found)
-    monkeypatch.setattr(app, "find_automatic",
+    monkeypatch.setattr(core, "find_automatic",
                         lambda meta: (providers.SearchReport(candidates=[found]), found))
     return path
 
@@ -1920,14 +1542,14 @@ def test_batch_romanizes_only_when_asked(cfg, tmp_path, monkeypatch, capsys):
     from mutagen.flac import FLAC
 
     path = _batch_track(tmp_path, monkeypatch, "[00:01.00]사랑해")
-    assert app.run_batch([path], tmp_path, tagging.MetadataCache(), False, False) == 0
+    assert batch.run_batch([path], tmp_path, tagging.MetadataCache(), False, False) == 0
     assert FLAC(path)["LYRICS"] == ["[00:01.00]사랑해"]  # off by default
 
     path.unlink()
     path = _batch_track(tmp_path, monkeypatch, "[00:01.00]사랑해")
     cfg["settings"]["auto_romanize"] = True
     cfg["settings"]["romanization_layout"] = "below"
-    assert app.run_batch([path], tmp_path, tagging.MetadataCache(), False, False) == 0
+    assert batch.run_batch([path], tmp_path, tagging.MetadataCache(), False, False) == 0
     saved = FLAC(path)["LYRICS"][0]
     assert saved.startswith("[00:01.00]사랑해") and "saranghae" in saved  # original kept, line below
     assert ", romanized" in capsys.readouterr().out
@@ -1938,8 +1560,8 @@ def test_batch_romanization_reports_a_missing_backend(cfg, tmp_path, monkeypatch
 
     path = _batch_track(tmp_path, monkeypatch, "[00:01.00]사랑해")
     cfg["settings"]["auto_romanize"] = True
-    monkeypatch.setattr(app, "auto_romanize", lambda lyrics: (None, "'korean-romanizer' is not installed"))
-    assert app.run_batch([path], tmp_path, tagging.MetadataCache(), False, False) == 0
+    monkeypatch.setattr(core, "auto_romanize", lambda lyrics: (None, "'korean-romanizer' is not installed"))
+    assert batch.run_batch([path], tmp_path, tagging.MetadataCache(), False, False) == 0
     assert FLAC(path)["LYRICS"] == ["[00:01.00]사랑해"]  # still tagged, as found
     assert "not romanized: 'korean-romanizer' is not installed" in capsys.readouterr().out
 
@@ -2023,108 +1645,22 @@ def test_bracketed_titles_get_separate_cache_slots():
     assert key("(사랑)", "A", "X", 0) != key("(이별)", "A", "X", 0)
 
 
-def test_path_completion_keeps_spaces_and_lists_once(tmp_path, monkeypatch):
-    (tmp_path / "My Album" / "CD1").mkdir(parents=True)
-    (tmp_path / "My Album" / "CD2").mkdir()
-    calls = []
-    real_glob = ui.glob.glob
-    monkeypatch.setattr(ui.glob, "glob", lambda pattern: calls.append(pattern) or real_glob(pattern))
-    prefix = str(tmp_path / "My Album" / "C")
-    results = []
-    state = 0
-    while (match := ui.complete_path(prefix, state)) is not None:
-        results.append(match)
-        state += 1
-    assert results == [str(tmp_path / "My Album" / n) + os.sep for n in ("CD1", "CD2")]
-    assert len(calls) == 1
-    assert ui.complete_path("'" + str(tmp_path / "My Al"), 0) == str(tmp_path / "My Album") + os.sep
-
-    delims = []
-    fakes = {"set_completer_delims": delims.append, "parse_and_bind": lambda s: None,
-             "set_completer": lambda f: None}
-    monkeypatch.setattr(ui, "_rl", lambda name: fakes.get(name))
-    ui.enable_path_completion()
-    assert delims and " " not in delims[0]
-
-
 def test_unusable_config_values_fall_back_with_a_warning(tmp_path):
     path = tmp_path / "config.json"
     path.write_text(
         '{"aliases": ["BTS", "Bangtan Boys"],'
         ' "api": {"max_workers": 0},'
-        ' "settings": {"preview_lines": -5, "color": "invalid", "romanization_layout": "Below"}}',
+        ' "settings": {"search_cache_entries": -5, "color": "invalid", "romanization_layout": "Below"}}',
         encoding="utf-8",
     )
     merged, warnings = config.load_config(path)
     joined = " ".join(warnings)
     assert "'aliases' must be a list of groups" in joined
     assert merged["api"]["max_workers"] == 8 and "api.max_workers" in joined
-    assert merged["settings"]["preview_lines"] == 16 and "settings.preview_lines" in joined
+    assert merged["settings"]["search_cache_entries"] == 64 and "settings.search_cache_entries" in joined
     assert merged["settings"]["color"] == "auto" and "settings.color" in joined
     assert merged["settings"]["romanization_layout"] == "Below"   # case does not matter
     assert "romanization_layout" not in joined
-
-
-def test_unchanged_edit_after_unsaved_romanization_asks_nothing(cfg, tmp_path, monkeypatch, capsys):
-    track = _flac_with_lyrics(tmp_path / "a.flac", "[00:01.00]사랑")
-    monkeypatch.setattr(app, "prompt_romanization", lambda lyrics: "[00:01.00]sarang")
-    monkeypatch.setattr(app, "open_editor", lambda text: text)
-    # r = romanize, n = do not save, e = edit without changes, s = next track,
-    # y = discard the unsaved romanization
-    _scripted_input(monkeypatch, ["r", "n", "e", "s", "y"])
-    monkeypatch.setattr(ui, "safe_input", app.safe_input)
-    meta = tagging.read_metadata(track)
-    assert app.manage_existing_lyrics(meta, tagging.MetadataCache()) is app.Action.NEXT
-    assert "No changes." in capsys.readouterr().out
-    assert tagging.read_metadata(track).lyrics == "[00:01.00]사랑"
-
-
-def test_editor_closed_at_once_is_a_note_not_an_error(monkeypatch, tmp_path):
-    script = tmp_path / "quit.py"
-    script.write_text("pass\n", encoding="utf-8")
-    monkeypatch.delenv("VISUAL", raising=False)
-    monkeypatch.setenv("EDITOR", f"{sys.executable} {script}")
-    shown = []
-    monkeypatch.setattr(app, "info", lambda msg: shown.append(("info", msg)))
-    monkeypatch.setattr(app, "error", lambda msg: shown.append(("error", msg)))
-    with pytest.raises(editor.EditorError) as caught:
-        editor.open_editor("original")
-    app.report_editor_error(caught.value)
-    assert shown[0][0] == "info" and shown[0][1].startswith("No changes")
-
-
-def test_tree_overview_continues_at_the_current_track(cfg, tmp_path, monkeypatch, capsys):
-    files = [_flac_with_lyrics(tmp_path / f"{n}.flac", f"[00:01.00]{n}") for n in ("a", "b", "c")]
-    # jump to track 2, back to the tree, Enter, quit
-    _scripted_input(monkeypatch, ["2", "t", "", "q"])
-    with pytest.raises(ui.QuitRequested):
-        app.run_interactive(files, tmp_path, tagging.MetadataCache())
-    out = capsys.readouterr().out
-    assert re.findall(r"\[(\d)/3\]", out) == ["2", "2"]
-    assert "Continue with track 2" in out
-
-
-def test_search_stays_cached_after_saving(cfg, tmp_path, monkeypatch):
-    from mutagen.flac import FLAC
-
-    track = _make_flac(tmp_path / "a.flac")
-    audio = FLAC(track)
-    audio["title"], audio["artist"] = "Song", "A"
-    audio.save()
-    found = _built(provider="LRCLIB", artist="A", title="Song", duration=10, track_duration=10)
-    _fake_providers(monkeypatch, [found])
-    searches = []
-    real_collect = providers.collect_candidates
-    monkeypatch.setattr(providers, "collect_candidates",
-                        lambda *a, **k: searches.append(a) or real_collect(*a, **k))
-    # Enter = first track, Enter = save the result; the end of the list leads
-    # back to the tree: 1 = the track again, o = search online instead.
-    _scripted_input(monkeypatch, ["", "", "1", "o"])
-    monkeypatch.setattr(ui, "safe_input", app.safe_input)
-    with pytest.raises(ui.QuitRequested):
-        app.run_interactive([track], tmp_path, tagging.MetadataCache())
-    assert tagging.read_metadata(track).lyrics == found.text
-    assert len(searches) == 1
 
 
 # --- LRCLIB rate limit -------------------------------------------------------
@@ -2199,7 +1735,7 @@ def test_batch_search_asks_get_only_once(cfg, monkeypatch):
     monkeypatch.setattr(providers, "get_session", lambda: session)
     cfg["api"]["enable_syncedlyrics"] = False
     meta = tagging.TrackMeta(path=Path("x.flac"), title="Song", artist="Band", album="Album", duration=200)
-    app.find_automatic(meta)
+    core.find_automatic(meta)
     # /get with duration, then without; the full search does not repeat them.
     assert session.lrclib.count("get") == 2
     assert session.lrclib.count("search") == 3
@@ -2215,10 +1751,10 @@ def test_batch_waits_and_retries_a_rate_limited_track(cfg, tmp_path, monkeypatch
     found = _built(provider="LRCLIB", artist="A", title="Song", duration=10, track_duration=10)
     limited = providers.SearchReport(rate_limited={"LRCLIB": 3.0})
     answers = iter([(limited, None), (providers.SearchReport(candidates=[found]), found)])
-    monkeypatch.setattr(app, "find_automatic", lambda meta: next(answers))
+    monkeypatch.setattr(core, "find_automatic", lambda meta: next(answers))
     waits = []
-    monkeypatch.setattr(app.time, "sleep", waits.append)
-    failures = app.run_batch([track], tmp_path, tagging.MetadataCache(), overwrite=False, dry_run=True)
+    monkeypatch.setattr(batch.time, "sleep", waits.append)
+    failures = batch.run_batch([track], tmp_path, tagging.MetadataCache(), overwrite=False, dry_run=True)
     out = capsys.readouterr().out
     assert waits == [10.0]
     assert "limiting requests; waiting 10s" in out and "would apply" in out
@@ -2381,12 +1917,6 @@ def test_megalobiz_rate_limit_skips_it_without_stalling_a_batch(cfg, monkeypatch
     assert "skipped: rate limit reached, free again in" in later.errors["Megalobiz"][0]
 
 
-def test_inspect_view_links_the_source_page(monkeypatch, capsys):
-    _scripted_input(monkeypatch, [""])
-    app.inspect_and_confirm("[00:01.00]la", "#1", source_url="https://megalobiz.com/lrc/1/b")
-    assert "Source: https://megalobiz.com/lrc/1/b" in capsys.readouterr().out
-
-
 def test_qqmusic_title_line_is_found_despite_version_notes():
     lyrics = "[ti:Lemon]\n[offset:-300]\n[00:00.00]Lemon - 米津玄師 (よねづ けんし)\n[00:00.81]夢ならば"
     # The song is 'Lemon (Live)', the line says 'Lemon'; the offset shifts
@@ -2394,3 +1924,591 @@ def test_qqmusic_title_line_is_found_despite_version_notes():
     assert providers._strip_qqmusic_extras(lyrics, "Lemon (Live)") == "[offset:-300]\n[00:00.81]夢ならば"
     # A first lyric line that merely contains ' - ' is kept.
     assert providers._strip_qqmusic_extras("[00:01.00]Run - run away", "Lemon") == "[00:01.00]Run - run away"
+
+
+# --- core: no output, steps any front end can show ----------------------------
+def test_batch_steps_neither_print_nor_sleep(cfg, tmp_path, monkeypatch, capsys):
+    from mutagen.flac import FLAC
+
+    track = _make_flac(tmp_path / "a.flac")
+    audio = FLAC(track)
+    audio["title"], audio["artist"] = "Song", "A"
+    audio.save()
+    found = _built(provider="LRCLIB", artist="A", title="Song", duration=10, track_duration=10)
+    limited = providers.SearchReport(rate_limited={"LRCLIB": 3.0})
+    answers = iter([(limited, None), (providers.SearchReport(candidates=[found]), found)])
+    monkeypatch.setattr(core, "find_automatic", lambda meta: next(answers))
+
+    def no_sleep(seconds):
+        raise AssertionError("the core must leave waiting to its caller")
+
+    monkeypatch.setattr(batch.time, "sleep", no_sleep)
+    steps = list(core.batch([track], tmp_path, tagging.MetadataCache(), overwrite=False, dry_run=True,
+                            backup_root=None))
+    assert capsys.readouterr().out == ""
+    assert [type(s).__name__ for s in steps] == ["Searching", "Pause", "Searching", "Outcome"]
+    assert steps[1].seconds == 10.0 and steps[1].limited == ["LRCLIB"]
+    assert steps[3].result == "planned" and "would apply" in steps[3].message
+
+
+def test_a_stopped_bulk_run_keeps_its_count_and_the_rest_untouched(cfg, tmp_path, state_dir):
+    music = tmp_path / "music"
+    music.mkdir()
+    files = [_flac_with_lyrics(music / f"{n}.flac", f"[00:01.00]{n}") for n in ("a", "b")]
+    steps = core.bulk("delete", files, music, tagging.MetadataCache(), core.backup_directory())
+    tally = core.Tally()
+    tally.add(next(steps))
+    steps.close()                            # a web page's "Stop", or Ctrl+C
+    assert (tally.done, tally.backed_up) == (1, 1)
+    assert [tagging.read_metadata(f).lyrics for f in files] == ["", "[00:01.00]b"]
+
+
+def test_folder_problems_are_returned_not_printed(tmp_path, cfg, capsys):
+    files, problem = core.check_music_directory(tmp_path / "missing")
+    assert files is None and problem.severe and "does not exist" in problem.message
+    files, problem = core.check_music_directory(tmp_path)
+    assert files is None and not problem.severe and "No supported music files" in problem.message
+    assert capsys.readouterr().out == ""
+
+
+def test_write_lyrics_returns_the_stale_sidecar_warning(tmp_path, cfg, capsys):
+    src = _make_flac(tmp_path / "song.flac")
+    (tmp_path / "song.lrc").write_text("old", encoding="utf-8")
+    warnings = core.write_lyrics(src, "[00:01.00]new")
+    assert len(warnings) == 1 and "'song.lrc' was not updated" in warnings[0]
+    assert capsys.readouterr().out == ""
+
+
+# --- the browser front end ------------------------------------------------------
+import http.client  # noqa: E402
+import json  # noqa: E402
+import threading  # noqa: E402
+
+from lyrembed import web  # noqa: E402
+
+TOKEN = "test-token"
+
+
+@pytest.fixture
+def web_server(cfg, tmp_path):
+    """A running server on a free port; no browser, no providers."""
+    session = web.WebSession(tmp_path, [], tagging.MetadataCache())
+    server = web._Server(session, TOKEN)
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+    thread.start()
+    yield server
+    server.shutdown()
+    server.server_close()
+
+
+def _http(server, method, path, body=None, headers=None, cookie=True):
+    conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
+    sent = {"Host": f"127.0.0.1:{server.port}"}
+    if cookie:
+        sent["Cookie"] = f"{web.COOKIE}={TOKEN}"
+    if body is not None:
+        body = json.dumps(body).encode()
+        sent.update({"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{server.port}"})
+    sent.update(headers or {})
+    conn.request(method, path, body=body, headers=sent)
+    response = conn.getresponse()
+    data = response.read()
+    conn.close()
+    return response, data
+
+
+def test_web_page_opens_only_with_the_token(web_server):
+    response, _ = _http(web_server, "GET", "/", cookie=False)
+    assert response.status == 403
+    response, _ = _http(web_server, "GET", "/?token=wrong", cookie=False)
+    assert response.status == 403
+    response, _ = _http(web_server, "GET", f"/?token={TOKEN}", cookie=False)
+    # The token becomes a cookie and leaves the address bar at once.
+    assert response.status == 303 and response.getheader("Location") == "/"
+    cookie = response.getheader("Set-Cookie")
+    assert f"{web.COOKIE}={TOKEN}" in cookie and "HttpOnly" in cookie and "SameSite=Strict" in cookie
+    response, page = _http(web_server, "GET", "/")
+    assert response.status == 200 and b'src="/static/app.js"' in page
+    assert "default-src 'self'" in response.getheader("Content-Security-Policy")
+    response, _ = _http(web_server, "GET", "/api/library", cookie=False)
+    assert response.status == 403
+
+
+def test_web_refuses_other_hosts_origins_and_forms(web_server):
+    # Another site reaching 127.0.0.1 through its own name (DNS rebinding).
+    response, _ = _http(web_server, "GET", "/api/library", headers={"Host": f"evil.example:{web_server.port}"})
+    assert response.status == 400
+    response, _ = _http(web_server, "POST", "/api/quit", {}, headers={"Origin": "http://evil.example"})
+    assert response.status == 403 and not web_server.stop.is_set()
+    # A plain HTML form can only send form types, never JSON.
+    response, _ = _http(web_server, "POST", "/api/quit", {}, headers={"Content-Type": "text/plain"})
+    assert response.status == 415 and not web_server.stop.is_set()
+    response, _ = _http(web_server, "POST", "/api/quit", {})
+    assert response.status == 200 and web_server.stop.wait(2)
+
+
+def test_web_static_files_stay_in_their_folder(web_server):
+    response, _ = _http(web_server, "GET", "/static/vendor/LICENSES.txt")
+    assert response.status == 200
+    for path in ("/static/../web.py", "/static/%2e%2e/web.py", "/static/../../pyproject.toml"):
+        response, _ = _http(web_server, "GET", path)
+        assert response.status == 404, path
+
+
+def test_web_session_lists_searches_saves_and_deletes(cfg, tmp_path, monkeypatch):
+    from mutagen.flac import FLAC
+
+    music = tmp_path / "music"
+    (music / "CD1").mkdir(parents=True)
+    plain = _flac_with_lyrics(music / "CD1" / "a.flac", "words only")
+    empty, inst = _make_flac(music / "CD1" / "b.flac"), _make_flac(music / "c.flac")
+    for path, title in ((empty, "Song"), (inst, "Song (Inst.)")):
+        audio = FLAC(path)
+        audio["title"], audio["artist"] = title, "Band"
+        audio.save()
+    session = web.WebSession(music, [plain, empty, inst], tagging.MetadataCache())
+
+    tracks = session.library()["tracks"]
+    assert [(t["status"], t["group"], t["instrumental"]) for t in tracks] == [
+        ("plain", "CD1", False), ("none", "CD1", False), ("none", "", True)]
+
+    found = _built(provider="LRCLIB", artist="Band", title="Song", duration=10, track_duration=10,
+                   text="[00:01.00]la")
+    _fake_providers(monkeypatch, [found])
+    result = session.search(1)
+    assert result["cached"] is False and result["highlight"] == 1
+    assert [c["providerName"] for c in result["candidates"]] == ["LRCLIB"]
+    assert session.search(1)["cached"] is True
+
+    saved = session.save(1, "[00:01.00]la")
+    assert saved["track"]["status"] == "sync" and FLAC(empty)["LYRICS"] == ["[00:01.00]la"]
+    with pytest.raises(web.ApiError):
+        session.save(1, "   ")
+    assert session.delete(1, sidecar=False)["track"]["status"] == "none"
+    with pytest.raises(web.ApiError) as missing:
+        session.track(5)
+    assert missing.value.status == 404
+    assert session.inspect("[00:01.00]사랑해") == {"synced": True, "script": "original"}
+
+
+def test_web_folder_picker_and_unusable_folders(cfg, tmp_path):
+    music = tmp_path / "music"
+    music.mkdir()
+    _make_flac(music / "a.flac")
+    (tmp_path / ".hidden").mkdir()
+    session = web.WebSession(None, [], tagging.MetadataCache(), problem="Path does not exist: /x")
+    assert session.library()["problem"] == "Path does not exist: /x"
+
+    listing = session.folders(str(tmp_path))
+    assert [d["name"] for d in listing["dirs"]] == ["music"]
+    assert listing["dirs"][0]["path"] == str(music)
+    assert session.folders(str(music))["musicFiles"] == 1
+
+    with pytest.raises(web.ApiError) as refused:
+        session.open_folder(str(tmp_path / "missing"))
+    assert "does not exist" in refused.value.message
+    opened = session.open_folder(str(music))
+    assert opened["folder"] == str(music) and len(opened["tracks"]) == 1 and opened["problem"] == ""
+
+
+def test_web_stops_once_the_page_is_gone(web_server, monkeypatch):
+    assert not web_server.page_gone()            # nobody visited yet: keep waiting
+    web_server.contact()
+    assert not web_server.page_gone()
+    web_server.closing_at = time.monotonic() - web.CLOSE_GRACE - 1
+    assert web_server.page_gone()                # closed and did not come back
+    web_server.contact()                         # a reload pings again
+    assert not web_server.page_gone()
+    web_server.last_contact = time.monotonic() - web.HEARTBEAT_TIMEOUT - 1
+    assert web_server.page_gone()
+
+
+def test_no_browser_is_for_the_page_only(capsys):
+    with pytest.raises(SystemExit):
+        cli.parse_args(["--auto", "--no-browser"])
+    assert cli.parse_args(["--no-browser"]).no_browser
+
+
+def test_web_audio_serves_byte_ranges(cfg, tmp_path):
+    track = _make_flac(tmp_path / "a.flac")
+    size = track.stat().st_size
+    session = web.WebSession(tmp_path, [track], tagging.MetadataCache())
+    server = web._Server(session, TOKEN)
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
+    try:
+        response, data = _http(server, "GET", "/api/tracks/0/audio")
+        assert response.status == 200 and data == track.read_bytes()
+        assert response.getheader("Content-Type") == "audio/flac" and response.getheader("Accept-Ranges") == "bytes"
+        # Seeking: the browser asks for the part it needs.
+        response, data = _http(server, "GET", "/api/tracks/0/audio", headers={"Range": "bytes=10-19"})
+        assert response.status == 206 and data == track.read_bytes()[10:20]
+        assert response.getheader("Content-Range") == f"bytes 10-19/{size}"
+        response, data = _http(server, "GET", "/api/tracks/0/audio", headers={"Range": "bytes=-5"})
+        assert response.status == 206 and data == track.read_bytes()[-5:]
+        response, _ = _http(server, "GET", "/api/tracks/0/audio", headers={"Range": f"bytes={size}-"})
+        assert response.status == 416 and response.getheader("Content-Range") == f"bytes */{size}"
+        response, _ = _http(server, "GET", "/api/tracks/0/audio", cookie=False)
+        assert response.status == 403
+        response, _ = _http(server, "GET", "/api/tracks/7/audio")
+        assert response.status == 404
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_web_plays_alac_through_a_flac_copy(cfg, tmp_path, monkeypatch):
+    alac = tmp_path / "a.m4a"
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "sine=duration=1",
+                    "-c:a", "alac", str(alac)], check=True)
+    aac = tmp_path / "b.m4a"
+    subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "sine=duration=1",
+                    "-c:a", "aac", str(aac)], check=True)
+    session = web.WebSession(tmp_path, [alac, aac], tagging.MetadataCache())
+    assert session.track(0)["playback"]["mode"] == "converted"
+    assert session.track(1)["playback"]["mode"] == "direct"   # AAC plays as it is
+    copy, content_type = session.audio(0)
+    assert content_type == "audio/flac" and copy.read_bytes()[:4] == b"fLaC"
+    assert session.audio(0)[0] == copy                         # converted once
+    assert session.audio(1) == (aac, "audio/mp4")
+    session.close()
+    assert not copy.exists()
+
+    monkeypatch.setattr(web.shutil, "which", lambda name: None)
+    assert session.track(0)["playback"]["mode"] == "none"
+    with pytest.raises(web.ApiError) as missing:
+        session.audio(0)
+    assert missing.value.status == 415 and "ffmpeg" in missing.value.message
+
+
+def test_web_romanizes_like_the_terminal(cfg):
+    choices = web.WebSession.romanizers("[00:01.00]사랑해")
+    assert choices["detected"] == "ko" and not choices["below"]
+    assert {o["key"] for o in choices["options"]} == set(text.ROMANIZERS)
+    with pytest.raises(web.ApiError):
+        web.WebSession.romanize("x", "klingon", "zh", False)
+    if text.HAS_KOREAN:
+        result = web.WebSession.romanize("[00:01.00]사랑해", "ko", "zh", keep_original=True)["lyrics"]
+        assert result.startswith("[00:01.00]사랑해\n[00:01.00]sa")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js not installed")
+def test_lrc_editor_functions():
+    # The editor's shifting and stamping run in the browser; Node runs their tests.
+    script = Path(__file__).with_name("lrc.test.mjs")
+    result = subprocess.run(["node", "--test", str(script)], capture_output=True, text=True, timeout=60)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+# --- settings, aliases and bulk runs from the page ---------------------------------
+@pytest.fixture
+def config_home(tmp_path, monkeypatch):
+    home = tmp_path / "xdg"
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home))
+    return home / "lyrembed" / "config.json"
+
+
+def test_saved_settings_keep_the_rest_of_the_file(cfg, config_home):
+    config_home.parent.mkdir(parents=True)
+    config_home.write_text('{"_note": "mine", "settings": {"search_cache_entries": 9, "_why": "x"}, "aliases": [["A", "B"]]}',
+                           encoding="utf-8")
+    cfg["_source"] = str(config_home)
+    assert config.save_settings({"settings": {"write_sidecar_lrc": True}, "api": {"enable_qqmusic": False}}) == config_home
+    saved = json.loads(config_home.read_text(encoding="utf-8"))
+    assert saved == {"_note": "mine", "settings": {"search_cache_entries": 9, "_why": "x", "write_sidecar_lrc": True},
+                     "aliases": [["A", "B"]], "api": {"enable_qqmusic": False}}
+    assert config.get("settings", "write_sidecar_lrc") is True and config.get("api", "enable_qqmusic") is False
+    assert json.loads(config_home.with_name("config.json.bak").read_text(encoding="utf-8"))["settings"]["search_cache_entries"] == 9
+    # What load_config would throw out is refused before anything is written.
+    for bad in ({"settings": {"search_cache_entries": 0}}, {"settings": {"search_cache_entries": "9"}}, {"settings": {"nope": 1}}):
+        with pytest.raises(config.ConfigError):
+            config.save_settings(bad)
+    assert json.loads(config_home.read_text(encoding="utf-8")) == saved
+
+
+def test_a_broken_config_file_is_never_overwritten(cfg, config_home):
+    config_home.parent.mkdir(parents=True)
+    config_home.write_text('{"settings": {', encoding="utf-8")
+    cfg["_source"] = "built-in defaults"          # unusable at start, so the defaults ran
+    with pytest.raises(config.ConfigError) as refused:
+        config.save_settings({"settings": {"auto_romanize": True}})
+    assert "not overwritten" in str(refused.value)
+    assert config_home.read_text(encoding="utf-8") == '{"settings": {'
+
+
+def test_settings_page_lists_every_setting_once(cfg):
+    listed = [(s["section"], s["key"]) for g in web.WebSession.settings()["groups"] for s in g["settings"]]
+    expected = {(sec, k) for sec in ("settings", "api", "cleaning") for k in config.DEFAULT_CONFIG[sec]} - {("api", "user_agent")}
+    assert len(listed) == len(set(listed)) and set(listed) == expected
+    layout = next(s for g in web.WebSession.settings()["groups"] for s in g["settings"] if s["key"] == "romanization_layout")
+    assert layout["choices"] == ["replace", "below"] and layout["help"]
+
+
+def test_aliases_from_the_page(cfg, config_home):
+    with pytest.raises(web.ApiError):
+        web.WebSession.save_aliases([["Lonely"]])
+    result = web.WebSession.save_aliases([["Test Artist", " テスト歌手 "], []])
+    assert result["user"] == [["Test Artist", "テスト歌手"]]
+    assert ("Test Artist", "テスト歌手") in config.alias_groups()
+    assert json.loads(config_home.read_text(encoding="utf-8"))["aliases"] == [["Test Artist", "テスト歌手"]]
+
+
+def _wait_for_job(session, timeout=10.0):
+    deadline = time.monotonic() + timeout
+    while session.job.running:
+        assert time.monotonic() < deadline, "the bulk run did not finish"
+        time.sleep(0.02)
+    return session.job_view(0)
+
+
+def test_bulk_run_in_the_background_reports_and_stops_between_tracks(cfg, tmp_path, monkeypatch):
+    from mutagen.flac import FLAC
+
+    files = []
+    for name in ("a", "b", "c"):
+        path = _make_flac(tmp_path / f"{name}.flac")
+        audio = FLAC(path)
+        audio["title"], audio["artist"] = name.upper(), "Band"
+        audio.save()
+        files.append(path)
+    cfg["api"]["batch_delay_seconds"] = 0
+    release = threading.Event()
+
+    def find(meta):
+        found = _built(provider="LRCLIB", artist="Band", title=meta.title, duration=10, track_duration=10,
+                       text=f"[00:01.00]{meta.title}")
+        if meta.title == "B":
+            release.wait(5)       # the second search takes a while
+        return providers.SearchReport(candidates=[found]), found
+
+    monkeypatch.setattr(core, "find_automatic", find)
+    session = web.WebSession(tmp_path, files, tagging.MetadataCache())
+    first = session.start_job("fetch", [0, 1, 2])
+    assert first["running"] and first["total"] == 3
+    with pytest.raises(web.ApiError) as busy:
+        session.start_job("fetch", [0])
+    assert busy.value.status == 409
+    deadline = time.monotonic() + 5
+    while session.job_view(0)["processed"] < 1:
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    session.stop_job()                            # while B's search runs
+    release.set()
+    view = _wait_for_job(session)
+    assert view["stopped"] and view["tally"]["done"] == 2   # B's search finishes; C is never started
+    assert [r["index"] for r in view["rows"]] == [0, 1]
+    assert FLAC(files[1])["LYRICS"] == ["[00:01.00]B"] and "LYRICS" not in FLAC(files[2])
+    assert session.job_view(1)["rows"] == view["rows"][1:]   # only rows the page has not seen
+
+
+def test_bulk_delete_from_the_page_backs_up(cfg, tmp_path, state_dir):
+    track = _flac_with_lyrics(tmp_path / "a.flac", "[00:01.00]old")
+    session = web.WebSession(tmp_path, [track], tagging.MetadataCache())
+    session.start_job("delete", [0])
+    view = _wait_for_job(session)
+    assert view["tally"] == {"done": 1, "skipped": 0, "failed": 0, "backedUp": 1} and view["backupRoot"]
+    assert tagging.read_metadata(track).lyrics == ""
+    assert [p.read_text(encoding="utf-8") for p in state_dir.rglob("*.lrc")] == ["[00:01.00]old"]
+    with pytest.raises(web.ApiError):
+        session.start_job("explode", [0])
+
+
+# --- covers and the preview ---------------------------------------------------------
+PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+JPEG = b"\xff\xd8\xff\xe0" + b"\x01" * 16
+
+
+def _flac_with_cover(path: Path, *pictures: tuple[int, bytes]) -> Path:
+    from mutagen.flac import FLAC, Picture
+
+    _make_flac(path)
+    audio = FLAC(path)
+    audio["title"], audio["artist"] = path.stem, "Band"
+    for kind, data in pictures:
+        picture = Picture()
+        picture.type, picture.mime, picture.data = kind, "image/whatever", data
+        audio.add_picture(picture)
+    audio.save()
+    return path
+
+
+def test_covers_prefer_the_front_and_fall_back_to_a_file(tmp_path):
+    both = _flac_with_cover(tmp_path / "a.flac", (4, JPEG), (3, PNG))   # back cover first, front second
+    assert tagging.embedded_cover(both) == PNG
+    bare = _flac_with_cover(tmp_path / "b.flac")
+    assert tagging.embedded_cover(bare) is None
+    assert tagging.cover_file(tmp_path) is None
+    (tmp_path / "Cover.JPG").write_bytes(JPEG)
+    assert tagging.cover_file(tmp_path) == tmp_path / "Cover.JPG"
+    # The bytes decide the type, not the tag; anything but these four is no cover.
+    assert tagging.image_type(PNG) == "image/png" and tagging.image_type(JPEG) == "image/jpeg"
+    assert tagging.image_type(b"<svg xmlns='http://www.w3.org/2000/svg'><script/></svg>") is None
+
+
+def test_one_cover_for_all_tracks_is_the_albums(cfg, tmp_path):
+    a = _flac_with_cover(tmp_path / "a.flac", (3, PNG))
+    b = _flac_with_cover(tmp_path / "b.flac", (3, PNG))
+    session = web.WebSession(tmp_path, [a, b], tagging.MetadataCache())
+    library = session.library()
+    assert library["cover"] and [t["cover"] for t in library["tracks"]] == [library["cover"]] * 2
+
+    other = tmp_path / "other"
+    other.mkdir()
+    c = _flac_with_cover(other / "c.flac", (3, JPEG))
+    d = _flac_with_cover(other / "d.flac")                                # no cover at all
+    session = web.WebSession(tmp_path, [a, c, d], tagging.MetadataCache())
+    library = session.library()
+    assert library["cover"] == "" and library["tracks"][0]["cover"] != library["tracks"][1]["cover"]
+    assert library["tracks"][2]["cover"] == ""
+    assert session.cover(1) == (JPEG, "image/jpeg")
+    with pytest.raises(web.ApiError) as missing:
+        session.cover(2)
+    assert missing.value.status == 404
+    (other / "folder.png").write_bytes(PNG)                          # a cover next to the files counts
+    assert session.cover(2) == (PNG, "image/png")
+
+
+def test_cover_route_may_be_cached(cfg, tmp_path):
+    track = _flac_with_cover(tmp_path / "a.flac", (3, JPEG))
+    session = web.WebSession(tmp_path, [track], tagging.MetadataCache())
+    server = web._Server(session, TOKEN)
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
+    try:
+        response, data = _http(server, "GET", "/api/tracks/0/cover?v=x")
+        assert response.status == 200 and data == JPEG and response.getheader("Content-Type") == "image/jpeg"
+        assert "max-age" in response.getheader("Cache-Control")
+        assert response.getheader("X-Content-Type-Options") == "nosniff"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+# --- behaviour the terminal menus used to test, now on core and the page ---------
+def test_a_failed_sidecar_is_a_warning_not_a_failed_save(tmp_path, cfg):
+    from mutagen.flac import FLAC
+
+    cfg["settings"]["write_sidecar_lrc"] = True
+    src = _make_flac(tmp_path / "song.flac")
+    (tmp_path / "song.lrc").mkdir()          # makes the sidecar unwritable
+    with pytest.raises(tagging.SidecarError):
+        tagging.embed_lyrics(src, "[00:01.00]x")
+    warnings = core.write_lyrics(src, "[00:02.00]y")
+    assert FLAC(src)["LYRICS"][0] == "[00:02.00]y" and len(warnings) == 1
+    (tmp_path / "song.lrc").rmdir()
+    assert core.write_lyrics(src, "[00:03.00]z") == []        # kept in sync, so not stale
+    assert tagging.stale_sidecar(src) is None
+
+
+@pytest.mark.skipif(not text.HAS_KOREAN, reason="korean-romanizer required")
+def test_bulk_romanize_backs_up_and_is_idempotent(cfg, tmp_path, state_dir):
+    cfg["settings"]["romanization_layout"] = "below"
+    music = tmp_path / "music"
+    music.mkdir()
+    korean = _flac_with_lyrics(music / "a.flac", "[00:01.00]사랑해")
+    latin = _flac_with_lyrics(music / "b.flac", "[00:01.00]hello there")
+    steps = list(core.bulk("romanize", [korean, latin], music, tagging.MetadataCache(), core.backup_directory()))
+    assert [s.result for s in steps] == ["done", "skipped"]
+    lyrics = tagging.read_metadata(korean).lyrics
+    assert lyrics.splitlines()[0] == "[00:01.00]사랑해" and lyrics.splitlines()[1].startswith("[00:01.00]sa")
+    assert tagging.read_metadata(latin).lyrics == "[00:01.00]hello there"
+    backups = list(state_dir.rglob("a.flac.lrc"))
+    assert len(backups) == 1 and backups[0].read_text(encoding="utf-8") == "[00:01.00]사랑해"
+    again = list(core.bulk("romanize", [korean], music, tagging.MetadataCache(), core.backup_directory()))
+    assert again[0].result == "skipped" and tagging.read_metadata(korean).lyrics == lyrics
+
+
+def test_bulk_sidecar_export_backs_up_a_differing_sidecar(cfg, tmp_path, state_dir):
+    music = tmp_path / "music"
+    music.mkdir()
+    track = _flac_with_lyrics(music / "a.flac", "[00:01.00]new")
+    tagging.sidecar_path(track).write_text("[00:01.00]old", encoding="utf-8")
+    steps = list(core.bulk("sidecars", [track], music, tagging.MetadataCache(), core.backup_directory()))
+    assert steps[0].result == "done" and steps[0].backed_up
+    assert tagging.sidecar_path(track).read_text(encoding="utf-8") == "[00:01.00]new"
+    assert [p.read_text(encoding="utf-8") for p in state_dir.rglob("*.lrc")] == ["[00:01.00]old"]
+
+
+def _searchable(tmp_path, title, artist):
+    from mutagen.flac import FLAC
+
+    path = _make_flac(tmp_path / f"{title}.flac")
+    audio = FLAC(path)
+    audio["title"], audio["artist"] = title, artist
+    audio.save()
+    return web.WebSession(tmp_path, [path], tagging.MetadataCache()), path
+
+
+def test_results_for_other_songs_are_kept_apart(cfg, tmp_path, monkeypatch):
+    filler = _built(artist="朴树", title="平凡之路", duration=300)
+    _fake_providers(monkeypatch, [filler], instrumental={"LRCLIB": "exact match"})
+    session, _ = _searchable(tmp_path, "Opening", "Orchestra")
+    result = session.search(0)
+    assert result["candidates"] == [] and result["highlight"] is None
+    assert [(c["title"], c["mismatch"]) for c in result["unrelated"]] == [("平凡之路", ["artist", "title"])]
+    assert result["instrumental"] == "LRCLIB (exact match)"
+
+
+def test_search_with_aliases_is_offered_and_runs(cfg, tmp_path, monkeypatch):
+    calls = []
+
+    def collect(title, artist, album, duration, quick=False, aliases=None):
+        calls.append(aliases)
+        return providers.SearchReport(aliases_searched=bool(aliases))
+
+    monkeypatch.setattr(providers, "collect_candidates", collect)
+    session, _ = _searchable(tmp_path, "Flashy", "P1Harmony")
+    assert "피원하모니" in session.search(0)["unsearchedAliases"]
+    assert session.search(0, aliases=True)["unsearchedAliases"] == []
+    assert calls == [False, True]
+
+
+def test_search_stays_cached_after_saving(cfg, tmp_path, monkeypatch):
+    found = _built(provider="LRCLIB", artist="A", title="Song", duration=10, track_duration=10)
+    _fake_providers(monkeypatch, [found])
+    searches = []
+    real_collect = providers.collect_candidates
+    monkeypatch.setattr(providers, "collect_candidates", lambda *a, **k: searches.append(a) or real_collect(*a, **k))
+    session, track = _searchable(tmp_path, "Song", "A")
+    session.save(0, session.search(0)["candidates"][0]["text"])
+    assert tagging.read_metadata(track).lyrics == found.text
+    assert session.search(0)["cached"] is True and len(searches) == 1
+
+
+def test_candidates_carry_their_source_script_and_length_check(cfg, monkeypatch):
+    class FakeEngine:
+        @staticmethod
+        def search(query, allow_plain_format=True):
+            return "[00:01.00]la la"
+
+    monkeypatch.setattr(providers, "HAS_SYNCEDLYRICS", True)
+    monkeypatch.setattr(providers, "syncedlyrics", FakeEngine, raising=False)
+    scraped = web.candidate_json(providers.query_syncedlyrics("Song", "Artist", providers.SearchReport())[0], 1)
+    assert scraped["providerName"] == "syncedlyrics" and scraped["unverified"]
+    scripts = [web.candidate_json(providers.Candidate.build(provider="LRCLIB", artist="A", title="t", album="", text=t), 1)["script"]
+               for t in ("사랑해 我爱你 ありがとう", "사랑해", "saranghae")]
+    assert scripts == ["mixed", "original", "latin"]
+    # The difference means something only with both lengths known.
+    unknown = web.candidate_json(_cand(has_duration=True, duration=200, track_duration=0), 1)
+    assert unknown["diff"] is None and unknown["duration"] == 200 and "duration" not in unknown["description"]
+    assert web.candidate_json(_cand(has_duration=True, duration=203, track_duration=200, diff=3), 1)["diff"] == 3
+
+
+def test_page_exit_codes(tmp_path, monkeypatch, cfg):
+    monkeypatch.setattr(config, "load_config", lambda path=None: (cfg, []))
+    _make_flac(tmp_path / "a.flac")
+    started = []
+    monkeypatch.setattr(web, "serve", lambda session, open_browser=True, port=0: started.append(open_browser) or 0)
+    assert cli.main([str(tmp_path), "--no-browser"]) == 0 and started == [False]
+
+    def interrupt(*args, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(web, "serve", interrupt)
+    assert cli.main([str(tmp_path)]) == 130
+
+
+def test_settings_of_the_terminal_menus_get_a_note(tmp_path, cfg):
+    path = tmp_path / "config.json"
+    path.write_text('{"settings": {"default_editor": "vim", "enter_opens_preview": true}}', encoding="utf-8")
+    _, warnings = config.load_config(path)
+    assert len(warnings) == 2 and all("terminal menus" in w and "unknown" not in w for w in warnings)

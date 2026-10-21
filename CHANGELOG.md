@@ -3,6 +3,53 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.0] — 2026-10-21
+
+### Changed
+
+* **lyrembed works in your browser now.** `lyrembed DIR` opens a page
+  instead of the terminal menus, which are gone. It runs on a small
+  server on `127.0.0.1` that only this computer can reach, and only with
+  the secret address lyrembed prints; it loads nothing from the internet.
+  Quit on the page, press Ctrl+C, or close the tab. `--auto` (batch mode)
+  works as before, without a page; its options and exit codes are
+  unchanged.
+* **Programs that start `lyrembed DIR`**, such as cdimport, now get the
+  page; lyrembed still exits when you are done, so they continue as
+  before.
+* **Windows no longer needs `pyreadline3`**: there are no prompts left.
+
+### Added
+
+* **The track list** with covers (one shared by every track is shown with
+  the folder) and each track's lyrics status. Every track can be played
+  from the list, and a folder picker opens another album.
+* **Search results next to a preview**, with provider notices, the
+  results for other songs behind a click, other search terms, a fresh
+  search, alias search, and lyrics typed or pasted in.
+* **An editor that plays the track** and lights up the current line:
+  shift all lines in 50/250 ms steps, start a single line at the current
+  position (which also turns plain lyrics into synced ones), switch
+  between search results while the song keeps playing, romanize, or edit
+  the text. A file's `[offset:]` is folded into the timestamps when the
+  timing changes. Apple Lossless (ALAC) tracks play through a temporary
+  FLAC copy made with ffmpeg, since browsers do not play ALAC.
+* **Bulk actions with live progress**: fetch lyrics automatically (also
+  as a dry run, replacing existing lyrics, or romanizing), romanize,
+  write `.lrc` files, delete. Stop takes effect after the current track.
+* **Settings and artist aliases** on the page. Only the changed keys are
+  written to the config file; its other keys and comments stay, the
+  previous version is kept as `config.json.bak`, and a file that is not
+  valid JSON is never overwritten.
+* **`--no-browser`** prints the page's address instead of opening it.
+
+### Removed
+
+* **The terminal menus**, the external editor (`$VISUAL`, `$EDITOR`) and
+  the path prompt with Tab completion. The settings `default_editor`,
+  `preview_lines` and `enter_opens_preview` belonged to them; a config
+  file that still has them gets a note that they can be removed.
+
 ## [0.7.0] — 2026-10-15
 
 ### Added
@@ -575,6 +622,7 @@ LRCLIB, NetEase and `syncedlyrics`; confidence-aware ranking; batch mode with
   time. Traditional Chinese resolves less often than simplified for this
   reason.
 
+[0.8.0]: https://github.com/sobakah/lyrembed/releases/tag/0.8.0
 [0.7.0]: https://github.com/sobakah/lyrembed/releases/tag/0.7.0
 [0.6.0]: https://github.com/sobakah/lyrembed/releases/tag/0.6.0
 [0.5.0]: https://github.com/sobakah/lyrembed/releases/tag/0.5.0

@@ -95,10 +95,6 @@
       ".opus",
       ".m4a"
     ],
-    "_default_editor": "Editor when $VISUAL and $EDITOR are unset.",
-    "default_editor": "nano",
-    "_preview_lines": "Lines shown in the short lyrics preview.",
-    "preview_lines": 16,
     "_non_latin_ratio_threshold": "Share of lyric lines with non-Latin letters above which lyrics count as original script (0.1 = 10%).",
     "non_latin_ratio_threshold": 0.1,
     "_max_search_depth": "Directory levels to scan below the start folder.",
@@ -111,8 +107,6 @@
     "prefer_latin": false,
     "_prefer_synced": "true ranks synced lyrics above plain ones, even above an exact match with plain lyrics only.",
     "prefer_synced": true,
-    "_enter_opens_preview": "true makes Enter on the highlighted search result open its preview and options, like typing its number; false (default) saves it right away.",
-    "enter_opens_preview": false,
     "_sort_by_tags": "true sorts by disc/track number, false by file name.",
     "sort_by_tags": false,
     "_write_sidecar_lrc": "Also write a .lrc file next to each track.",
@@ -121,7 +115,7 @@
     "id3_v2_version": 4,
     "_uslt_language": "Three-letter language code stored with MP3 lyrics.",
     "uslt_language": "eng",
-    "_romanization_layout": "What Enter picks after romanizing: \"replace\" or \"below\" (keep the original line).",
+    "_romanization_layout": "\"replace\" or \"below\" (keep the original line): preselected when romanizing on the page, and used by the bulk action and batch mode.",
     "romanization_layout": "replace",
     "_auto_romanize": "true romanizes the lyrics batch mode (--auto) embeds: detected script, layout from romanization_layout, Latin lyrics left alone. --romanize / --no-romanize override it for one run.",
     "auto_romanize": false,
@@ -129,7 +123,7 @@
     "prefer_album_artist": false,
     "_search_all_aliases": "true searches every alias of the artist right away. false (default) searches the tag's artist first and the aliases only when that finds no synced lyrics, or on 'a'.",
     "search_all_aliases": false,
-    "_color": "\"auto\", \"always\" or \"never\".",
+    "_color": "Colours in the terminal output (batch mode, messages): \"auto\", \"always\" or \"never\".",
     "color": "auto"
   }
 }

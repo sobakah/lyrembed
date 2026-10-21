@@ -13,7 +13,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 PROJECT_URL = "https://github.com/sobakah/lyrembed"
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -57,15 +57,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
     },
     "settings": {
         "supported_extensions": [".flac", ".mp3", ".ogg", ".opus", ".m4a"],
-        "default_editor": "nano",
-        "preview_lines": 16,
         "non_latin_ratio_threshold": 0.1,
         "max_search_depth": 3,
         "max_file_count": 250,
         "search_cache_entries": 64,
         "prefer_latin": False,
         "prefer_synced": True,
-        "enter_opens_preview": False,
         "sort_by_tags": False,
         "write_sidecar_lrc": False,
         "id3_v2_version": 4,
@@ -140,23 +137,20 @@ SETTING_HELP: dict[str, Any] = {
     },
     "settings": {
         "supported_extensions": "File types to scan; can only narrow the five supported ones.",
-        "default_editor": "Editor when $VISUAL and $EDITOR are unset.",
-        "preview_lines": "Lines shown in the short lyrics preview.",
         "non_latin_ratio_threshold": "Share of lyric lines with non-Latin letters above which lyrics count as original script (0.1 = 10%).",
         "max_search_depth": "Directory levels to scan below the start folder.",
         "max_file_count": "Stop the scan above this many files; 0 = no limit.",
         "search_cache_entries": "Searches kept in memory per session.",
         "prefer_latin": "true ranks romanized lyrics first; false leaves the script out of the ranking.",
         "prefer_synced": "true ranks synced lyrics above plain ones, even above an exact match with plain lyrics only.",
-        "enter_opens_preview": (
-            "true makes Enter on the highlighted search result open its preview and options, "
-            "like typing its number; false (default) saves it right away."
-        ),
         "sort_by_tags": "true sorts by disc/track number, false by file name.",
         "write_sidecar_lrc": "Also write a .lrc file next to each track.",
         "id3_v2_version": "ID3v2 version (3 or 4) for MP3s without a tag; existing tags keep theirs.",
         "uslt_language": "Three-letter language code stored with MP3 lyrics.",
-        "romanization_layout": "What Enter picks after romanizing: \"replace\" or \"below\" (keep the original line).",
+        "romanization_layout": (
+            "\"replace\" or \"below\" (keep the original line): preselected when romanizing on the page, "
+            "and used by the bulk action and batch mode."
+        ),
         "auto_romanize": (
             "true romanizes the lyrics batch mode (--auto) embeds: detected script, layout from "
             "romanization_layout, Latin lyrics left alone. --romanize / --no-romanize override it "
@@ -167,7 +161,7 @@ SETTING_HELP: dict[str, Any] = {
             "true searches every alias of the artist right away. false (default) searches the "
             "tag's artist first and the aliases only when that finds no synced lyrics, or on 'a'."
         ),
-        "color": "\"auto\", \"always\" or \"never\".",
+        "color": "Colours in the terminal output (batch mode, messages): \"auto\", \"always\" or \"never\".",
     },
 }
 
@@ -313,6 +307,7 @@ def config_search_paths() -> list[Path]:
 
 # Values of the right type can still be unusable: max_workers 0 silently
 # turned LRCLIB off, a negative preview_lines cut lines off the end.
+# (preview_lines went with the terminal menus in 0.8.0; see _RETIRED.)
 _MINIMUMS: dict[tuple[str, str], float] = {
     ("api", "timeout_seconds"): 1,
     ("api", "netease_search_limit"): 1,
@@ -322,7 +317,6 @@ _MINIMUMS: dict[tuple[str, str], float] = {
     ("api", "duration_tolerance_seconds"): 0,
     ("api", "syncedlyrics_timeout_seconds"): 1,
     ("api", "batch_delay_seconds"): 0,
-    ("settings", "preview_lines"): 1,
     ("settings", "non_latin_ratio_threshold"): 0,
     ("settings", "max_search_depth"): 0,
     ("settings", "max_file_count"): 0,
@@ -353,6 +347,13 @@ def _invalid_alias_groups(groups: list) -> list[str]:
     be dropped without a word by alias_groups()."""
     return [repr(group) for group in groups
             if not (isinstance(group, list) and all(isinstance(name, str) for name in group))]
+
+
+# Settings of the terminal menus, which the browser page replaced in 0.8.0.
+# A config file may still have them: worth a note, but not "unknown key".
+_RETIRED = {
+    ("settings", "default_editor"), ("settings", "preview_lines"), ("settings", "enter_opens_preview"),
+}
 
 
 def _matches_type(value: Any, default: Any) -> bool:
@@ -396,7 +397,10 @@ def _validate(merged: dict, user: dict, source: Path) -> list[str]:
         if not isinstance(default_section, dict):
             continue
         for key, value in values.items():
-            if key not in default_section:
+            if (section, key) in _RETIRED:
+                warnings.append(f"{source}: '{section}.{key}' belonged to the terminal menus, which the "
+                                f"browser page replaced in 0.8.0; it does nothing now and can be removed.")
+            elif key not in default_section:
                 warnings.append(f"{source}: unknown key '{section}.{key}' is ignored.")
             elif not _matches_type(value, default_section[key]):
                 expected = type(default_section[key]).__name__
@@ -482,3 +486,76 @@ def get(section: str, key: str, default: Any = None) -> Any:
     if key in section_data:
         return section_data[key]
     return DEFAULT_CONFIG.get(section, {}).get(key, default)
+
+
+# --- changing settings from the page -----------------------------------------
+def user_config_path() -> Path:
+    """Where changed settings go: the file in effect, else the first search path."""
+    source = CONFIG.get("_source", "")
+    if source and source != "built-in defaults":
+        return Path(source)
+    return config_search_paths()[0]
+
+
+def setting_problem(section: str, key: str, value: Any) -> str | None:
+    """Why *value* cannot be saved for section.key, or None; the same checks
+    load_config applies, so a saved value is never thrown out at the next start."""
+    default_section = DEFAULT_CONFIG.get(section)
+    if not isinstance(default_section, dict) or key not in default_section:
+        return "is not a setting"
+    default = default_section[key]
+    if not _matches_type(value, default):
+        return f"should be of type {type(default).__name__}"
+    return _out_of_range(section, key, value)
+
+
+def save_settings(changes: dict[str, dict[str, Any]], aliases: list | None = None) -> Path:
+    """Write *changes* (and the user's *aliases*) to the config file in effect
+    and apply them to the running config.
+
+    Only the given keys change: the file's other keys and its '_' comments stay.
+    A file that is not valid JSON is never overwritten - it may hold the user's
+    work - and the previous version is kept as config.json.bak.
+    """
+    for section, values in changes.items():
+        for key, value in values.items():
+            problem = setting_problem(section, key, value)
+            if problem:
+                raise ConfigError(f"'{section}.{key}' {problem}.")
+    if aliases is not None:
+        invalid = _invalid_alias_groups(aliases)
+        if invalid:
+            raise ConfigError(f"Alias groups must be lists of names; not {', '.join(invalid)}.")
+
+    path = user_config_path()
+    raw: dict = {}
+    if path.is_file():
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise ConfigError(f"'{path}' cannot be read, so it is not overwritten: {exc}") from exc
+        if not isinstance(raw, dict):
+            raise ConfigError(f"'{path}' is not a JSON object, so it is not overwritten.")
+    for section, values in changes.items():
+        if not isinstance(raw.get(section), dict):
+            raw[section] = {}
+        raw[section].update(copy.deepcopy(values))
+    if aliases is not None:
+        raw["aliases"] = copy.deepcopy(aliases)
+
+    temporary = path.with_name(path.name + ".tmp")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(raw, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        if path.is_file():
+            path.with_name(path.name + ".bak").write_bytes(path.read_bytes())
+        os.replace(temporary, path)
+    except OSError as exc:
+        raise ConfigError(f"Could not write '{path}': {exc}") from exc
+
+    for section, values in changes.items():
+        CONFIG.setdefault(section, copy.deepcopy(DEFAULT_CONFIG[section])).update(copy.deepcopy(values))
+    if aliases is not None:
+        CONFIG["aliases"] = copy.deepcopy(aliases)
+    CONFIG["_source"] = str(path)
+    return path

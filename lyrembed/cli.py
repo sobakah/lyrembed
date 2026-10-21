@@ -7,7 +7,7 @@ import logging
 import sys
 from pathlib import Path
 
-from . import app, config, providers, tagging, ui
+from . import batch, config, core, providers, tagging, ui
 from .config import __version__
 from .tagging import MetadataCache
 
@@ -15,8 +15,9 @@ from .tagging import MetadataCache
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lyrembed",
-        description="Search, inspect, romanize and embed synchronized and plain lyrics "
-                    "in FLAC, MP3, OGG Vorbis, Opus and M4A files.",
+        description="Search, check, romanize and embed synchronized and plain lyrics "
+                    "in FLAC, MP3, OGG Vorbis, Opus and M4A files. Opens a page in your browser "
+                    "(only this computer can reach it); --auto works without one.",
     )
     parser.add_argument("path", nargs="?", default=".", help="music directory (default: current directory)")
     parser.add_argument("--version", action="version", version=f"lyrembed {__version__}")
@@ -25,6 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="print the artist alias groups in effect and where they come from, then exit")
     parser.add_argument("--max-files", type=int, metavar="N",
                         help="scan at most N files (0 = unlimited; default: settings.max_file_count)")
+
+    browser = parser.add_argument_group("browser")
+    browser.add_argument("--no-browser", action="store_true",
+                         help="print the page's address instead of opening it")
 
     batch = parser.add_argument_group("batch mode")
     batch.add_argument("--auto", action="store_true", help="tag every track with a confident match, without prompting")
@@ -57,6 +62,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         if given:
             verb = "apply" if len(given) > 1 else "applies"
             parser.error(f"{' and '.join(given)} only {verb} together with --auto")
+    if args.no_browser and args.auto:
+        parser.error("--no-browser and --auto exclude each other: batch mode runs without a page")
     if args.max_files is not None and args.max_files < 0:
         parser.error("--max-files must be 0 (unlimited) or a positive number")
     return args
@@ -81,6 +88,18 @@ def print_aliases() -> None:
     print(f"In effect: {len(groups)} groups\n")
     for group in groups:
         print("  " + " = ".join(group))
+
+
+def _serve_web(path: Path, cache: MetadataCache, open_browser: bool) -> int:
+    """Open the page on *path*; a folder that cannot be used is no reason not
+    to start, the page asks for another one."""
+    from . import web  # not needed for batch mode
+
+    resolved = path.expanduser().resolve()
+    files, problem = core.check_music_directory(resolved)
+    session = web.WebSession(resolved if files else None, core.sort_files(files, cache) if files else [],
+                             cache, problem.message if problem else "")
+    return web.serve(session, open_browser=open_browser)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -120,26 +139,19 @@ def main(argv: list[str] | None = None) -> int:
     if unsupported:
         ui.warn(f"Warning: cannot tag {', '.join(unsupported)} - ignored in "
                 f"settings.supported_extensions (supported: {', '.join(tagging.SUPPORTED_EXTENSIONS)}).")
-    if not ui.HAS_READLINE and not args.auto:
-        ui.warn("readline is unavailable - history, Tab completion and prefilled prompts are disabled. "
-                "On Windows: pip install pyreadline3")
 
     cache = MetadataCache()
 
     try:
-        resolved = app.resolve_music_directory(Path(args.path), interactive=not args.auto)
+        if not args.auto:
+            return _serve_web(Path(args.path), cache, open_browser=not args.no_browser)
+        resolved = batch.open_music_directory(Path(args.path))
         if resolved is None:
-            # Only reachable without prompts: batch mode never asks for a path.
+            # Batch mode may run from cron: it never asks for another folder.
             return 2
         base_dir, files = resolved
-        files = app.sort_files(files, cache)
-
-        if args.auto:
-            return app.run_batch(files, base_dir, cache, overwrite=args.overwrite, dry_run=args.dry_run)
-        return app.run_interactive(files, base_dir, cache)
-
-    except ui.QuitRequested as quit_request:
-        return quit_request.code
+        return batch.run_batch(core.sort_files(files, cache), base_dir, cache,
+                               overwrite=args.overwrite, dry_run=args.dry_run)
     except KeyboardInterrupt:
         print("\n\nProgram aborted by user.")
         return 130

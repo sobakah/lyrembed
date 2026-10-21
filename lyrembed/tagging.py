@@ -174,6 +174,81 @@ def _parse_number(raw) -> int:
 
 
 # --- reading -----------------------------------------------------------------
+# --- cover art -----------------------------------------------------------------
+# Front cover in the picture types of FLAC, ID3 and Vorbis pictures.
+_FRONT_COVER = 3
+# Names a cover file next to the tracks usually has, without the extension.
+COVER_FILE_STEMS = ("cover", "folder", "front", "albumart", "album")
+_COVER_FILE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def image_type(data: bytes) -> str | None:
+    """The MIME type of *data* judged by its first bytes, for the formats a
+    page may show; anything else (SVG can carry scripts) is None. A tag's own
+    MIME field is often wrong or empty."""
+    if data[:3] == b"\xff\xd8\xff":
+        return "image/jpeg"
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png"
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
+
+
+def _pick_picture(pictures) -> bytes | None:
+    """The front cover if there is one, else the first picture."""
+    pictures = [p for p in pictures if getattr(p, "data", None)]
+    if not pictures:
+        return None
+    front = [p for p in pictures if getattr(p, "type", None) == _FRONT_COVER]
+    return (front or pictures)[0].data
+
+
+def embedded_cover(path: Path) -> bytes | None:
+    """The cover picture stored in the file, or None. Raises TaggingError
+    for a file that cannot be read."""
+    ext = path.suffix.lower()
+    try:
+        audio = _open_audio(path)
+        if ext == ".flac":
+            return _pick_picture(audio.pictures)
+        if ext in (".ogg", ".opus"):
+            from base64 import b64decode
+            from mutagen.flac import Picture
+
+            pictures = []
+            for raw in audio.get("metadata_block_picture") or []:
+                try:
+                    pictures.append(Picture(b64decode(raw)))
+                except (ValueError, MutagenError):
+                    continue
+            return _pick_picture(pictures)
+        if ext == ".mp3":
+            return _pick_picture(audio.tags.getall("APIC")) if audio.tags else None
+        if ext == ".m4a":
+            covers = (audio.tags or {}).get("covr") or []
+            return bytes(covers[0]) if covers else None
+    except (MutagenError, OSError) as exc:
+        raise TaggingError(f"Could not read the cover of '{path.name}': {exc}") from exc
+    return None
+
+
+def cover_file(folder: Path) -> Path | None:
+    """A cover image next to the tracks (cover.jpg, folder.png, ...)."""
+    try:
+        candidates = {p.name.lower(): p for p in folder.iterdir() if p.is_file()}
+    except OSError:
+        return None
+    for stem in COVER_FILE_STEMS:
+        for extension in _COVER_FILE_EXTENSIONS:
+            found = candidates.get(stem + extension)
+            if found is not None:
+                return found
+    return None
+
+
 def read_metadata(path: Path) -> TrackMeta:
     meta = TrackMeta(path=path)
     ext = path.suffix.lower()
