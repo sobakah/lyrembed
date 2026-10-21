@@ -2,7 +2,7 @@
 
 Vibecoded tool for Linux, macOS and Windows to search, check, romanize and embed synchronized (`.lrc`) and plain lyrics into FLAC, MP3, OGG Vorbis, Opus and M4A files, with a focus on East Asian music. You work on a page in your browser that only your own computer can reach; batch mode runs in the terminal.
 
-Version 0.8.0 · Python 3.10+ · MIT
+Version 0.9.0 · Python 3.10+ · MIT
 
 Formerly called **lrckit**; see the [changelog](CHANGELOG.md) for moving an existing setup. Version 0.8.0 replaced the terminal menus with the browser page.
 
@@ -52,7 +52,7 @@ The checkout also runs without installation. `run.py` is only a launcher — it 
 run.py
 lyrembed/
     __init__.py  cli.py  web.py  core.py  batch.py  providers.py
-    tagging.py   text.py ui.py   config.py static/
+    tagging.py   text.py ui.py   config.py desktop.py  static/
 ```
 
 ```bash
@@ -96,7 +96,7 @@ lyrembed ~/Music/Artist --auto        # tag everything with a confident match
 lyrembed ~/Music/Artist --auto --dry-run
 ```
 
-Without `--auto`, lyrembed opens its page in your default browser and prints the page's address. Only this computer can open it, and only with the secret address lyrembed prints. Quit on the page or press Ctrl+C in the terminal; closing the tab ends lyrembed too, after a short while. If the folder can't be used (it doesn't exist, has no music, or is your home folder), the page asks for another one.
+Without `--auto`, lyrembed opens its page in your default browser and prints the page's address. Only this computer can open it, and only with the secret address lyrembed prints. Quit on the page or press Ctrl+C in the terminal; closing the tab ends lyrembed too, after a short while. If the folder can't be used (it doesn't exist, has no music, or is your home folder), the page asks for another one. Started without a folder in your home folder, as the app menu does, the folder picker opens in your music folder.
 
 | Option | Effect |
 |---|---|
@@ -106,6 +106,9 @@ Without `--auto`, lyrembed opens its page in your default browser and prints the
 | `--list-aliases` | Print the artist alias groups in effect (built-in and your own) and exit |
 | `--max-files N` | Scan at most `N` files, `0` for no limit (overrides `settings.max_file_count`) |
 | `--no-browser` | Print the page's address instead of opening it |
+| `--return-url URL` / `--return-name NAME` | For another program's page that opens lyrembed (cdimport does): **Done – back to NAME** replaces Quit, ends lyrembed and sends the tab back to `URL`, which must be on this computer (`http://127.0.0.1:PORT/…`) |
+| `--install-desktop-entry` | Add lyrembed to the app menu (Linux and BSD desktops), then exit; see [App menu](#app-menu) |
+| `--remove-desktop-entry` | Remove it again, then exit |
 | `--auto` | Batch mode: tag confident matches without a page and without prompting |
 | `--overwrite` | With `--auto`, also replace existing lyrics; the old ones are backed up to `$XDG_STATE_HOME/lyrembed/backups/<time>/` (default `~/.local/state/…`) |
 | `--dry-run` | With `--auto`, report changes without writing |
@@ -117,6 +120,14 @@ Without `--auto`, lyrembed opens its page in your default browser and prints the
 `--auto` only applies a candidate when it is synchronized, the artist matches, and the duration is within `api.duration_tolerance_seconds` — or the match came from LRCLIB's exact `/get` endpoint. Results from the `syncedlyrics` engine are never applied automatically, because it does not say which recording its lyrics belong to. Anything less confident is left for the page.
 
 To go easy on LRCLIB, a free community service, batch mode first asks only its exact `/get` endpoint and runs the full search across all providers just for tracks that are not settled that way, and it waits `api.batch_delay_seconds` between tracks. Batch mode never prompts: a path it cannot use ends the run with exit code 2.
+
+### App menu
+
+```bash
+lyrembed --install-desktop-entry
+```
+
+adds lyrembed to the app menu of GNOME, KDE and other freedesktop.org desktops: `~/.local/share/applications/lyrembed.desktop` and an icon under `~/.local/share/icons/`. The entry starts the lyrembed that wrote it — a pipx installation, or the Python and `run.py` of a checkout — so run the command again after installing lyrembed somewhere else. Started from the menu, the page opens in your default browser with the folder picker in your music folder (`XDG_MUSIC_DIR`). `--remove-desktop-entry` removes both files.
 
 Exit codes: `0` success or quit, `1` some files failed in batch mode, `2` unusable path, config or arguments, `130` aborted with Ctrl+C.
 
@@ -133,6 +144,7 @@ Exit codes: `0` success or quit, `1` some files failed in batch mode, `2` unusab
 * **Megalobiz** results come from a site where users sync lyrics themselves: often several versions of one song, also for little-known songs, of varying quality. It is only asked when LRCLIB, NetEase and QQ Music find no synced lyrics that fit, because its free API allows 30 requests a minute and 1,000 a day (`api.megalobiz_api_key` raises that); after a refusal it is skipped until its limit resets. The preview links to the lyrics' page there.
 * **syncedlyrics** results come from the `syncedlyrics` engine, which tries Musixmatch and Genius (`api.syncedlyrics_providers`) and returns bare text; they are marked *not verified*, since they carry no artist or title to check against. By default the engine only runs when LRCLIB, NetEase and QQ Music find no synced lyrics that fit (`api.syncedlyrics_as_fallback`). As of October 2026 neither source answers through syncedlyrics 1.0.1, its latest release: Musixmatch returns the same unrelated songs for every search, Genius refuses the requests.
 * NetEase results may come in a second variant marked `user romanization` — the romanized lyrics NetEase users submitted. **QQ Music** is strong in Chinese, Korean and Japanese music; it often has lyrics when LRCLIB and NetEase do not.
+* **Romanize when saving**, in the preview, romanizes before both Save buttons the way batch mode does with `settings.auto_romanize` (detected script, layout from `settings.romanization_layout`), without opening the editor. It starts as that setting says and stays as set while you work through the album.
 * **Search with other terms** searches for another title or artist, **Search again, without the cache** asks the providers again, **Also search as …** adds the artist's aliases, and **Type or paste lyrics yourself** opens an empty editor.
 
 Only results that fit the track are listed: the artist must match (aliases included), and the title too — or, for a title in another language such as `사랑을 했다` vs `LOVE SCENARIO`, the length. The rest sits behind **Show N results for other titles or artists** and is marked `≠ artist` / `≠ title`. NetEase and QQ Music in particular pad searches without good hits with unrelated popular songs, whose lyrics are not even fetched; NetEase does the same when it throttles a client that sent too many requests, which lyrembed then reports as a provider notice. To stay below that limit, NetEase and QQ Music get one search at a time and at most three lyrics requests per round. Version notes count: the sung version is no match for `Song (Inst.)`, even as LRCLIB's exact match, and an instrumental version is no match for the sung track even when its length fits.
@@ -153,6 +165,8 @@ Batch mode and the bulk fetch skip such tracks and report them as instrumental; 
 * **Version** switches between the search results while the song keeps playing.
 * **Romanize…** and **Edit as text** change the text itself; **Undo changes** returns to where you started.
 * Keys: Space plays and pauses, ← and → jump 5 s, N starts the chosen line, Ctrl+S saves. Leaving with unsaved changes asks first.
+
+**Import a CD** appears when [cdimport](https://github.com/sobakah/cdimport) 0.6.0 or newer is installed. It opens cdimport's page in the same tab to rip a disc; cdimport's lyrics step opens the album on a lyrembed page of its own, and at the end **Done – back to lyrembed** brings the tab back here with the imported album open.
 
 **Bulk actions** run one action on many tracks, picked from a list (all, none, with or without lyrics), and show each track's result as it comes; each result leads to its track. Stop takes effect after the current track.
 
@@ -286,6 +300,7 @@ lyrembed/
   aliases.json           Built-in artist alias groups
   ui.py                  Terminal colours and messages
   config.py              Defaults, recursive config merging, saving settings
+  desktop.py             The app-menu entry (--install-desktop-entry)
 tests/                   pytest regression suite, Node tests for the editor's LRC logic
 ```
 

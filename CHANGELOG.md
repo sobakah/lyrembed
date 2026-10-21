@@ -3,6 +3,38 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.9.0] — 2026-10-21
+
+### Added
+
+* **Romanize when saving**, a checkbox in the preview of a search result:
+  both Save buttons then romanize first, as batch mode does with
+  `settings.auto_romanize` (detected script, configured layout), without
+  the editor. It starts as that setting says and stays as set while
+  working through an album; with the needed package missing nothing is
+  saved and the page says why.
+* **Import a CD**, when cdimport 0.6.0 or newer is installed: cdimport's
+  page opens in the same tab, its lyrics step opens the album on a
+  lyrembed page of its own, and **Done – back to lyrembed** at the end
+  brings the tab back with the imported album open.
+* **`--return-url URL --return-name NAME`**, for another program's page
+  that opens lyrembed: **Done – back to NAME** replaces Quit, ends
+  lyrembed and sends the tab back. Only addresses on this computer are
+  accepted.
+* **An app-menu entry**: `lyrembed --install-desktop-entry` adds lyrembed
+  with an icon to the menu of Linux and BSD desktops, starting the
+  lyrembed that wrote it (a pipx installation or a checkout);
+  `--remove-desktop-entry` removes it. Started without a folder, the page
+  opens the folder picker in the desktop's music folder instead of
+  warning about the home folder.
+
+### Fixed
+
+* **Two pages on this computer no longer log each other out.** Browser
+  cookies belong to the host, not the port, so a second lyrembed (or
+  cdimport) overwrote the first one's token; the cookie's name now
+  carries the port.
+
 ## [0.8.0] — 2026-10-21
 
 ### Changed
@@ -622,6 +654,7 @@ LRCLIB, NetEase and `syncedlyrics`; confidence-aware ranking; batch mode with
   time. Traditional Chinese resolves less often than simplified for this
   reason.
 
+[0.9.0]: https://github.com/sobakah/lyrembed/releases/tag/0.9.0
 [0.8.0]: https://github.com/sobakah/lyrembed/releases/tag/0.8.0
 [0.7.0]: https://github.com/sobakah/lyrembed/releases/tag/0.7.0
 [0.6.0]: https://github.com/sobakah/lyrembed/releases/tag/0.6.0

@@ -55,6 +55,7 @@ function Icon({ name, size = 16 }) {
     right: html`<path d="m9 18 6-6-6-6"></path>`,
     up: html`<path d="m18 15-6-6-6 6"></path>`,
     folder: html`<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>`,
+    disc: html`<circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="2.5"></circle>`,
     link: html`<path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>`,
   };
   return html`<svg width=${size} height=${size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -85,6 +86,8 @@ function App() {
   const [job, setJob] = useState(null);
   // The song list's preview: one track at a time, kept while moving around.
   const [preview, setPreview] = useState(null);
+  // "Romanize when saving" stays as set while working through an album.
+  const [romanizeOnSave, setRomanizeOnSave] = useState(null);
   const previewAudio = useRef(null);
   // Set by the editor; checked before anything leaves it.
   const dirty = useRef(false);
@@ -98,9 +101,18 @@ function App() {
   }, []);
 
   useEffect(() => {
-    api('/library')
-      .then((lib) => { setLibrary(lib); if (!lib.folder) setPicker(true); })
+    // Back from cdimport, the tab arrives while cdimport is still ending and
+    // has not yet said which album it imported: ask again until it has.
+    const loadLibrary = (first) => api('/library')
+      .then((lib) => {
+        setLibrary(lib);
+        if (first) setRomanizeOnSave(lib.autoRomanize);
+        if (lib.imported) notify(`Imported ${lib.imported}: here it is.`);
+        if (!lib.folder && !lib.importing) setPicker(true);
+        if (lib.importing) setTimeout(() => loadLibrary(false), 1000);
+      })
       .catch((err) => setLoadError(err.message));
+    loadLibrary(true);
     // After a reload, a run that is still going shows again.
     api('/jobs/current').then((r) => { if (r.job && r.job.running) { setJob(r.job); setView({ name: 'bulk' }); } }).catch(() => {});
     // The server stops when the page is gone: it hears nothing for a while,
@@ -194,10 +206,27 @@ function App() {
     notify(`Opened ${lib.name}: ${lib.tracks.length} tracks.`, 'info');
   };
 
+  const [importing, setImporting] = useState(false);
+  // cdimport opens its own page; its Done leads back here with the album.
+  const importCd = async () => {
+    if (!leaveOk()) return;
+    setImporting(true);
+    try {
+      const { url } = await api('/import', {});
+      location.href = url;
+    } catch (err) {
+      notify(err.message, 'error');
+      setImporting(false);
+    }
+  };
+
   const quit = async () => {
+    if (job && job.running && !confirm('A bulk run is still going. Stop it after the current track?')) return;
     if (!leaveOk()) return;
     await api('/quit', {}).catch(() => {});
-    setStopped(true);
+    // Opened by another program's page: the tab goes back there.
+    if (library && library.returnUrl) location.href = library.returnUrl;
+    else setStopped(true);
   };
 
   let body = null;
@@ -210,6 +239,7 @@ function App() {
   } else if (library && view.name === 'track') {
     body = html`<${TrackView} key=${view.index} library=${library} index=${view.index} notify=${notify}
       preview=${preview} onPlay=${playPreview}
+      romanize=${!!romanizeOnSave} onRomanize=${setRomanizeOnSave}
       onOpen=${(index) => go({ name: 'track', index })} onHome=${() => go({ name: 'library' })}
       onUpdated=${updateTrack} onNext=${() => nextTrack(view.index)}
       onSave=${async (lyrics, message, next) => {
@@ -248,10 +278,16 @@ function App() {
       </nav>
       <span class="path mono">${library ? library.folder : ''}</span>
       <button class="btn btn-small" onClick=${() => { if (leaveOk()) setPicker(true); }}><${Icon} name="folder" /> Change folder…</button>
-      <button class="btn btn-small" onClick=${quit}>Quit</button>
+      ${library && library.cdimport && html`<button class="btn btn-small" disabled=${importing} onClick=${importCd}>
+        <${Icon} name="disc" /> ${importing ? 'Starting cdimport…' : library.importing ? 'Back to the import' : 'Import a CD'}</button>`}
+      ${library && library.returnUrl
+        ? html`<button class="btn btn-small btn-primary" onClick=${quit}>Done – back to ${library.returnName}</button>`
+        : html`<button class="btn btn-small" onClick=${quit}>Quit</button>`}
     </header>
     <main class=${preview ? 'with-player' : ''}>
       ${loadError && html`<p class="note note-error">${loadError}</p>`}
+      ${library && library.returnUrl && view.name === 'library' && html`<p class="note note-info" style=${{ marginBottom: '20px' }}>
+        ${library.returnName} opened this album here. When you're done, <b>Done – back to ${library.returnName}</b> takes you back.</p>`}
       ${body}
     </main>
     ${preview && library && library.tracks[preview.index] && html`<${MiniPlayer} track=${library.tracks[preview.index]}
@@ -436,7 +472,8 @@ function MiniPlayer({ track, preview, audio, onPlay, onOpen, onChange, onFailed,
 }
 
 // --- one track ------------------------------------------------------------------------
-function TrackView({ library, index, notify, onOpen, onHome, onUpdated, onNext, onSave, onEdit, preview, onPlay }) {
+function TrackView({ library, index, notify, onOpen, onHome, onUpdated, onNext, onSave, onEdit, preview, onPlay,
+  romanize, onRomanize }) {
   const [track, setTrack] = useState(null);
   const [error, setError] = useState('');
   const [searching, setSearching] = useState(false);
@@ -519,13 +556,14 @@ function TrackView({ library, index, notify, onOpen, onHome, onUpdated, onNext, 
           </div>
         </div>`}
         ${!track.error && (!track.lyrics || searching) && html`<${SearchPanel} key=${'s' + index} track=${track}
-          onSave=${saveHere} onEdit=${onEdit} />`}
+          onSave=${saveHere} onEdit=${onEdit} notify=${notify} romanize=${romanize} onRomanize=${onRomanize}
+          below=${library.romanizeBelow} />`}
       `}
     </section>
   </div>`;
 }
 
-function SearchPanel({ track, onSave, onEdit }) {
+function SearchPanel({ track, onSave, onEdit, notify, romanize, onRomanize, below }) {
   const [result, setResult] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -571,6 +609,32 @@ function SearchPanel({ track, onSave, onEdit }) {
   const all = result ? result.candidates.concat(showUnrelated ? result.unrelated : []) : [];
   const chosen = all.find((c) => c.number === selected);
   const source = (c) => `${c.providerName}: ${c.artist ? c.artist + ' - ' : ''}${c.title}`;
+  const [saving, setSaving] = useState(false);
+  // With "Romanize when saving": what batch mode's auto_romanize does, on the
+  // server, so the page and --auto never differ.
+  const saveChosen = async (next) => {
+    let lyrics = chosen.text;
+    let note = '';
+    setSaving(true);
+    try {
+      if (romanize && chosen.script !== 'latin') {
+        const r = await api('/auto-romanize', { lyrics });
+        if (r.blocked) {
+          notify(`Not saved: ${r.blocked}, so the lyrics can't be romanized. Untick "Romanize when saving" to save them as they are.`, 'warn');
+          return;
+        }
+        if (r.lyrics) {
+          lyrics = r.lyrics;
+          note = `, romanized (${r.language})`;
+        }
+      }
+      await onSave(lyrics, `Saved lyrics from ${source(chosen)}${note}.`, next);
+    } catch (err) {
+      notify(err.message, 'error');
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return html`<div class="stack">
     <div class="row-wrap">
@@ -639,9 +703,15 @@ function SearchPanel({ track, onSave, onEdit }) {
         ${chosen.url && html`<a href=${chosen.url} target="_blank" rel="noopener noreferrer" class="small row-wrap">
           The lyrics' page at ${chosen.providerName} <${Icon} name="link" size=${14} /></a>`}
         <div class="lyrics-preview mono">${chosen.text}</div>
+        <label class="check small">
+          <input type="checkbox" checked=${romanize} disabled=${chosen.script === 'latin'} onChange=${() => onRomanize(!romanize)} />
+          <span><b>Romanize when saving</b>${chosen.script === 'latin' ? html` <span class="muted">(already Latin)</span>` : ''}<br />
+            <span class="muted">${'Detected script; ' + (below ? 'the original stays, the romanized line goes below it' : 'romanized lines replace the original')
+              + ' (Settings: romanization layout).'}</span></span>
+        </label>
         <div class="row-wrap">
-          <button class="btn btn-primary" onClick=${() => onSave(chosen.text, `Saved lyrics from ${source(chosen)}.`, true)}>Save and go to the next track</button>
-          <button class="btn" onClick=${() => onSave(chosen.text, `Saved lyrics from ${source(chosen)}.`, false)}>Save</button>
+          <button class="btn btn-primary" disabled=${saving} onClick=${() => saveChosen(true)}>Save and go to the next track</button>
+          <button class="btn" disabled=${saving} onClick=${() => saveChosen(false)}>Save</button>
           <button class="btn" onClick=${() => onEdit(chosen.text, chosen.providerName, all, chosen.number)}>Check and edit</button>
         </div>
       </div>`}

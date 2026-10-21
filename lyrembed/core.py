@@ -128,6 +128,26 @@ def check_music_directory(resolved: Path) -> tuple[list[Path] | None, DirectoryP
     return None, DirectoryProblem(f"Path is not a directory: {resolved}", severe=True)
 
 
+def music_folder() -> Path:
+    """The desktop's music folder (XDG_MUSIC_DIR, ~/Musik on a German
+    desktop), else ~/Music if it exists, else the home folder: where the
+    folder picker starts when lyrembed was started without a folder."""
+    home = Path.home()
+    dirs = config.config_home() / "user-dirs.dirs"
+    try:
+        for line in dirs.read_text(encoding="utf-8").splitlines():
+            match = re.match(r'\s*XDG_MUSIC_DIR="(.*)"\s*$', line)
+            if match:
+                value = match.group(1).replace("$HOME", str(home))
+                folder = Path(value)
+                if folder.is_absolute() and folder.is_dir() and folder != home:
+                    return folder
+    except OSError:
+        pass
+    fallback = home / "Music"
+    return fallback if fallback.is_dir() else home
+
+
 # --- writing -----------------------------------------------------------------
 def write_lyrics(path: Path, lyrics: str) -> list[str]:
     """Embed *lyrics*; returns warnings, raises TaggingError when the tag

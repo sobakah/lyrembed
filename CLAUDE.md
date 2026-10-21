@@ -24,6 +24,7 @@ lyrembed/
   text.py                Tag cleaning, artist matching, script handling, romanization
   ui.py                  Terminal colours, messages and the status line
   config.py              Defaults, setting explanations, config merging, alias loading
+  desktop.py             The app-menu entry (freedesktop.org), written on request
   aliases.json           Built-in artist alias groups (package data)
 tests/test_lyrembed.py     pytest suite
 tests/lrc.test.mjs         Node tests for static/lrc.js (run by the pytest suite when node exists)
@@ -33,7 +34,7 @@ tests/lrc.test.mjs         Node tests for static/lrc.js (run by the pytest suite
 
 ```bash
 pip install -e ".[all,dev]"     # all optional backends plus pytest/pyflakes
-pytest -q                       # 171 tests; 21 skip without the optional backends,
+pytest -q                       # 185 tests; 21 skip without the optional backends,
                                 # 2 more without ffmpeg or node
 python -m pyflakes lyrembed/ tests/ run.py
 python run.py --version
@@ -213,6 +214,29 @@ valid JSON is never overwritten. Values go through the checks
 discarded at the next start. `api.user_agent` is not offered: a saved copy
 would freeze the version.
 
+**Another program's page can hand lyrembed the tab** (cdimport, from 0.9.0):
+`--return-url URL --return-name NAME` replaces Quit with "Done – back to
+NAME", which ends lyrembed and sends the tab to URL. Only local addresses are
+accepted (`cli.local_page`: http, 127.0.0.1 or localhost, a port), so
+lyrembed cannot be used to send a tab elsewhere. cdimport finds lyrembed's
+page by the first line `serve` prints, "lyrembed is running at <url>"
+(its `web._HANDOFF`): keep that wording.
+
+**Import a CD starts cdimport the other way round** (`web.Import`): lyrembed
+runs `cdimport --web --no-browser --return-url <its page> --return-name
+lyrembed` (found by `web.find_cdimport`, only if its `--help` has
+`--return-url`), sends the tab to the address cdimport prints, and reads
+cdimport's output to the end for "cdimport finished: <folder>", which it
+then opens (`_take_imported`). The tab comes back before cdimport has
+ended, so the page asks again while `importing` is true. While cdimport
+runs, and `IMPORT_GRACE` after, lyrembed's own page does not count as
+gone (`import_away`). Not offered when lyrembed itself was opened with
+`--return-url`, so the two cannot call each other in a loop.
+
+**The token cookie's name carries the port** (`web.cookie_name`). Cookies
+belong to a host, not a port: a second lyrembed on 127.0.0.1 (cdimport's
+lyrics step starts one) overwrote the first one's token under one name.
+
 **The page has no build step and loads nothing from the internet.**
 `static/vendor/preact-htm.js` is htm 3.1.1's `preact/standalone.module.js`,
 unchanged; the npm checksum and both licenses are in `LICENSES.txt`. To update
@@ -223,6 +247,15 @@ rendered as text, never as markup.
 failures, 2 unusable input, 130 Ctrl+C. Programs such as cdimport start
 `lyrembed DIR` and wait for it, so the page must end the process: Quit,
 closing the tab, or Ctrl+C.
+
+**The app-menu entry starts the lyrembed that wrote it.** pipx cannot install
+desktop files, so `--install-desktop-entry` writes one, with
+`desktop.launch_command` (a pipx launcher, or `python run.py` of a checkout).
+`Exec` arguments follow the spec's two escaping layers (`exec_argument`): a
+literal backslash in a quoted argument becomes four. The menu gives no
+folder and starts in the home folder; `cli` then opens the picker in
+`core.music_folder()` without the home-folder warning, which only appears
+for a folder given on purpose.
 
 **Retired settings get a note, not "unknown key".** `config._RETIRED` lists
 the settings of the terminal menus (`default_editor`, `preview_lines`,

@@ -2005,7 +2005,7 @@ def _http(server, method, path, body=None, headers=None, cookie=True):
     conn = http.client.HTTPConnection("127.0.0.1", server.port, timeout=5)
     sent = {"Host": f"127.0.0.1:{server.port}"}
     if cookie:
-        sent["Cookie"] = f"{web.COOKIE}={TOKEN}"
+        sent["Cookie"] = f"{web.cookie_name(server.port)}={TOKEN}"
     if body is not None:
         body = json.dumps(body).encode()
         sent.update({"Content-Type": "application/json", "Origin": f"http://127.0.0.1:{server.port}"})
@@ -2026,7 +2026,7 @@ def test_web_page_opens_only_with_the_token(web_server):
     # The token becomes a cookie and leaves the address bar at once.
     assert response.status == 303 and response.getheader("Location") == "/"
     cookie = response.getheader("Set-Cookie")
-    assert f"{web.COOKIE}={TOKEN}" in cookie and "HttpOnly" in cookie and "SameSite=Strict" in cookie
+    assert f"{web.cookie_name(web_server.port)}={TOKEN}" in cookie and "HttpOnly" in cookie and "SameSite=Strict" in cookie
     response, page = _http(web_server, "GET", "/")
     assert response.status == 200 and b'src="/static/app.js"' in page
     assert "default-src 'self'" in response.getheader("Content-Security-Policy")
@@ -2512,3 +2512,185 @@ def test_settings_of_the_terminal_menus_get_a_note(tmp_path, cfg):
     path.write_text('{"settings": {"default_editor": "vim", "enter_opens_preview": true}}', encoding="utf-8")
     _, warnings = config.load_config(path)
     assert len(warnings) == 2 and all("terminal menus" in w and "unknown" not in w for w in warnings)
+
+
+# --- app-menu entry and starting without a folder ------------------------------------
+from lyrembed import desktop  # noqa: E402
+
+
+def test_desktop_exec_arguments_are_quoted_and_escaped():
+    assert desktop.exec_argument("/usr/bin/lyrembed") == "/usr/bin/lyrembed"
+    assert desktop.exec_argument("/home/a b/run.py") == '"/home/a b/run.py"'
+    assert desktop.exec_argument("/m/100%") == "/m/100%%"
+    # A literal $ is escaped inside the quotes; the string escape then doubles the backslash.
+    assert desktop.exec_argument("/x/$y") == '"/x/\\\\$y"'
+
+
+def test_desktop_entry_starts_the_lyrembed_that_wrote_it(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    launcher = tmp_path / "check out" / "run.py"
+    launcher.parent.mkdir()
+    launcher.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [str(launcher)])
+    monkeypatch.setattr(desktop, "_refresh", lambda folder: None)
+    entry, icon, command = desktop.install()
+    assert command == [sys.executable, str(launcher)]
+    text = entry.read_text(encoding="utf-8")
+    assert f'Exec={sys.executable} "{launcher}" %f' in text and f"Icon={icon}" in text
+    assert "Terminal=false" in text and icon.read_text(encoding="utf-8").startswith("<svg")
+    if shutil.which("desktop-file-validate"):
+        checked = subprocess.run(["desktop-file-validate", str(entry)], capture_output=True, text=True)
+        assert checked.returncode == 0 and not checked.stdout.strip(), checked.stdout
+    assert desktop.remove() == [entry, icon] and not entry.exists() and desktop.remove() == []
+
+
+def test_desktop_entry_for_an_installed_launcher(tmp_path, monkeypatch):
+    shim = tmp_path / "bin" / "lyrembed"
+    shim.parent.mkdir()
+    shim.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [str(shim)])
+    assert desktop.launch_command() == [str(shim)]
+
+
+def test_music_folder_comes_from_the_desktop(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / "Musik").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    assert core.music_folder() == home                          # no user-dirs, no ~/Music
+    (home / ".config").mkdir()
+    (home / ".config" / "user-dirs.dirs").write_text('XDG_MUSIC_DIR="$HOME/Musik"\n', encoding="utf-8")
+    assert core.music_folder() == home / "Musik"
+    session = web.WebSession(None, [], tagging.MetadataCache())
+    assert session.folders("")["path"] == str(home / "Musik")
+
+
+def test_started_from_the_menu_the_page_asks_without_a_warning(tmp_path, monkeypatch, cfg):
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.chdir(home)
+    monkeypatch.setattr(config, "load_config", lambda path=None: (cfg, []))
+    problems = []
+    monkeypatch.setattr(web, "serve", lambda session, open_browser=True, port=0: problems.append(session.problem) or 0)
+    assert cli.main([]) == 0                    # the app menu gives no folder
+    assert cli.main([str(home)]) == 0           # typed on purpose: say why it is not used
+    assert problems[0] == "" and "home directory" in problems[1]
+
+
+def test_quick_romanization_does_what_batch_mode_does(cfg, monkeypatch):
+    assert web.WebSession.auto_romanize("[00:01.00]hello there") == {
+        "lyrics": None, "reason": "already Latin", "blocked": "", "language": "", "below": False}
+    cfg["settings"]["romanization_layout"] = "below"
+    monkeypatch.setitem(text.ROMANIZERS, "ko", ("Korean (Hangul → Romaja)", lambda: False, "korean-romanizer"))
+    blocked = web.WebSession.auto_romanize("[00:01.00]사랑해")
+    assert blocked["lyrics"] is None and blocked["blocked"] == "'korean-romanizer' is not installed"
+    assert blocked["language"].startswith("Korean") and blocked["below"]
+
+
+@pytest.mark.skipif(not text.HAS_KOREAN, reason="korean-romanizer required")
+def test_quick_romanization_keeps_the_original_below(cfg):
+    cfg["settings"]["romanization_layout"] = "below"
+    result = web.WebSession.auto_romanize("[00:01.00]사랑해")
+    assert result["lyrics"].startswith("[00:01.00]사랑해\n[00:01.00]sa") and not result["blocked"]
+
+
+def test_library_says_how_the_quick_romanization_starts(cfg, tmp_path):
+    session = web.WebSession(tmp_path, [_make_flac(tmp_path / "a.flac")], tagging.MetadataCache())
+    assert session.library()["autoRomanize"] is False
+    cfg["settings"]["auto_romanize"] = True
+    assert session.library()["autoRomanize"] is True
+
+
+# --- opened by another program's page ----------------------------------------------
+def test_the_done_button_only_leads_to_a_page_on_this_computer(capsys):
+    assert cli.local_page("http://127.0.0.1:41877/") and cli.local_page("http://localhost:8000/x")
+    for url in ("https://127.0.0.1:41877/", "http://evil.example:80/", "http://127.0.0.1/", "javascript:alert(1)",
+                "http://127.0.0.1.evil.example:80/"):
+        assert not cli.local_page(url), url
+    for argv in (["--return-url", "http://evil.example:80/"], ["--return-name", "cdimport"],
+                 ["--auto", "--return-url", "http://127.0.0.1:1/"]):
+        with pytest.raises(SystemExit):
+            cli.parse_args(argv)
+    args = cli.parse_args(["--return-url", "http://127.0.0.1:41877/", "--return-name", "cdimport"])
+    assert (args.return_url, args.return_name) == ("http://127.0.0.1:41877/", "cdimport")
+
+
+def test_the_page_knows_where_done_goes(tmp_path, monkeypatch, cfg):
+    _make_flac(tmp_path / "a.flac")
+    monkeypatch.setattr(config, "load_config", lambda path=None: (cfg, []))
+    seen = []
+    monkeypatch.setattr(web, "serve", lambda session, open_browser=True, port=0: seen.append(session.library()) or 0)
+    assert cli.main([str(tmp_path), "--no-browser", "--return-url", "http://127.0.0.1:41877/", "--return-name", "cdimport"]) == 0
+    assert cli.main([str(tmp_path), "--no-browser"]) == 0
+    assert (seen[0]["returnUrl"], seen[0]["returnName"]) == ("http://127.0.0.1:41877/", "cdimport")
+    assert seen[1]["returnUrl"] == ""
+
+
+# --- importing a CD with cdimport -------------------------------------------------
+def _fake_cdimport(folder: Path, help_text: str, run_lines: list[str], pause: float = 0.0) -> Path:
+    """A 'cdimport' that prints help or, when run, the given lines."""
+    script = folder / "cdimport"
+    lines = ";".join(f"print({line!r}, flush=True)" for line in run_lines)
+    script.write_text(f"#!{sys.executable}\nimport sys, time\n"
+                      f"if '--help' in sys.argv: print({help_text!r}); sys.exit(0)\n"
+                      f"{lines.split(';')[0] if lines else ''}\n"
+                      f"time.sleep({pause})\n"
+                      + "\n".join(lines.split(";")[1:]) + "\n", encoding="utf-8")
+    script.chmod(0o755)
+    return script
+
+
+def test_only_a_cdimport_that_can_lead_back_is_offered(tmp_path, monkeypatch):
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert web.find_cdimport() is None
+    _fake_cdimport(tmp_path, "  --web  --no-browser", [])                       # cdimport 0.5
+    assert web.find_cdimport() is None
+    script = _fake_cdimport(tmp_path, "  --web  --return-url URL", [])
+    assert web.find_cdimport() == str(script)
+
+
+def test_an_import_opens_the_album_it_brought(cfg, tmp_path, monkeypatch):
+    album = tmp_path / "lib" / "Night Lines"
+    album.mkdir(parents=True)
+    _make_flac(album / "01.flac")
+    script = _fake_cdimport(tmp_path, "--return-url", ["cdimport is running at http://127.0.0.1:5555/?token=abc",
+                                                       f"cdimport finished: {album}"], pause=0.3)
+    session = web.WebSession(None, [], tagging.MetadataCache())
+    session._cdimport = (True, str(script))
+    with pytest.raises(web.ApiError):
+        session.start_import()                                                  # no page address yet
+    session.page_url = "http://127.0.0.1:41000/"
+    assert session.start_import() == {"url": "http://127.0.0.1:5555/?token=abc"}
+    assert session.importing.command[1:] == ["--web", "--no-browser", "--return-url", "http://127.0.0.1:41000/",
+                                             "--return-name", "lyrembed"]
+    assert session.import_away() and session.library()["importing"]
+    session.importing.process.wait(5)
+    deadline = time.monotonic() + 5
+    while session.importing.ended_at is None:
+        assert time.monotonic() < deadline
+        time.sleep(0.02)
+    library = session.library()
+    assert library["imported"] == "Night Lines" and library["folder"] == str(album)
+    assert session.library()["imported"] == ""                                 # said once
+    assert session.import_away()                                               # the tab is on its way back
+    monkeypatch.setattr(web, "IMPORT_GRACE", 0.0)
+    assert not session.import_away()
+
+
+def test_import_is_not_offered_to_a_page_cdimport_opened(cfg, tmp_path):
+    session = web.WebSession(None, [], tagging.MetadataCache())
+    session._cdimport = (True, "/usr/bin/cdimport")
+    assert session.library()["cdimport"] is True
+    session.return_url = "http://127.0.0.1:41877/"
+    assert session.library()["cdimport"] is False                              # no loop between the two
+
+
+def test_two_pages_on_one_host_keep_their_own_cookie(web_server):
+    # Cookies belong to the host, not the port: a second lyrembed (cdimport's
+    # lyrics step starts one) overwrote the first one's token under one name.
+    other = web.cookie_name(web_server.port + 1)
+    assert other != web.cookie_name(web_server.port)
+    response, _ = _http(web_server, "GET", "/api/library", cookie=False, headers={"Cookie": f"{other}={TOKEN}"})
+    assert response.status == 403

@@ -13,7 +13,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 PROJECT_URL = "https://github.com/sobakah/lyrembed"
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -283,14 +283,14 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
-def _config_home() -> Path:
+def config_home() -> Path:
     xdg = os.environ.get("XDG_CONFIG_HOME")
     return Path(xdg) if xdg else Path.home() / ".config"
 
 
 def legacy_config_path() -> Path:
     """Where the config lived while the project was called lrckit."""
-    return _config_home() / "lrckit" / "config.json"
+    return config_home() / "lrckit" / "config.json"
 
 
 def config_search_paths() -> list[Path]:
@@ -298,7 +298,7 @@ def config_search_paths() -> list[Path]:
     existing setup keeps working after the rename (load_config says to move
     it). A ``config.json`` in a source checkout is still honoured last, for
     setups that predate the XDG location."""
-    paths = [_config_home() / "lyrembed" / "config.json", legacy_config_path()]
+    paths = [config_home() / "lyrembed" / "config.json", legacy_config_path()]
     checkout = Path(__file__).resolve().parent.parent
     if (checkout / "pyproject.toml").is_file():
         paths.append(checkout / "config.json")

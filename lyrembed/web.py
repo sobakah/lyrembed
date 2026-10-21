@@ -38,8 +38,17 @@ _CONTENT_TYPES = {
     ".js": "text/javascript; charset=utf-8",
     ".css": "text/css; charset=utf-8",
     ".txt": "text/plain; charset=utf-8",
+    # lyrembed's own icon only: covers never come from here.
+    ".svg": "image/svg+xml",
 }
+# Cookies belong to a host, not a port: two pages on 127.0.0.1 (a second
+# lyrembed, lyrembed and cdimport handing a tab to each other) would overwrite
+# each other's token under one name. The port goes into the name.
 COOKIE = "lyrembed_token"
+
+
+def cookie_name(port: int) -> str:
+    return f"{COOKIE}_{port}"
 # A page pings every 15 s; Chrome runs a hidden tab's timers only once a
 # minute, so silence shorter than that does not mean the page is gone.
 HEARTBEAT_TIMEOUT = 90.0
@@ -134,6 +143,70 @@ def _is_alac(path: Path) -> bool:
         return MP4(path).info.codec == "alac"
     except Exception:  # unreadable: let the browser try and report it
         return False
+
+
+# --- importing a CD with cdimport ----------------------------------------------
+# cdimport's lines this reads (cdimport/web.py, serve): its page's address,
+# and the album folder when the run is done.
+_CDIMPORT_PAGE = re.compile(r"cdimport is running at (http://(?:127\.0\.0\.1|localhost):\d+/\?token=[A-Za-z0-9_-]+)")
+_CDIMPORT_DONE = re.compile(r"^cdimport finished: (.+)$")
+# After cdimport sends the tab back, lyrembed's page needs a moment to load:
+# until then, its "closing" from leaving does not count.
+IMPORT_GRACE = 30.0
+
+
+def find_cdimport() -> str | None:
+    """cdimport, if it is installed and can lead back to lyrembed's page
+    (--return-url, cdimport 0.6.0 and newer)."""
+    found = shutil.which("cdimport")
+    if found is None:
+        local = Path.home() / ".local" / "bin" / "cdimport"
+        found = str(local) if local.is_file() else None
+    if found is None:
+        return None
+    try:
+        result = subprocess.run([found, "--help"], capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return found if "--return-url" in result.stdout else None
+
+
+class Import:
+    """cdimport running for lyrembed's page: started with this page as its
+    way back, and read to its end for the album it imported."""
+
+    def __init__(self, command: list[str]) -> None:
+        self.command = command
+        self.url = ""
+        self.album: Path | None = None
+        self.ended_at: float | None = None
+        self.lines: list[str] = []
+        self._found = threading.Event()
+        self.process = subprocess.Popen(command, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT, text=True, errors="replace")
+        threading.Thread(target=self._read, name="lyrembed-import", daemon=True).start()
+
+    def _read(self) -> None:
+        assert self.process.stdout is not None
+        for line in self.process.stdout:
+            line = line.rstrip("\n")
+            self.lines = (self.lines + [line])[-20:]
+            if not self.url and (page := _CDIMPORT_PAGE.search(line)):
+                self.url = page.group(1)
+                self._found.set()
+            elif done := _CDIMPORT_DONE.match(line):
+                self.album = Path(done.group(1))
+        self.process.wait()
+        self.ended_at = time.monotonic()
+        self._found.set()
+
+    def wait_for_page(self, timeout: float) -> str:
+        self._found.wait(timeout)
+        return self.url
+
+    @property
+    def running(self) -> bool:
+        return self.process.poll() is None
 
 
 # --- bulk runs -----------------------------------------------------------------
@@ -282,6 +355,16 @@ class WebSession:
         self._converted: dict[tuple[Path, float], Path] = {}
         self._temp: Path | None = None
         self.job: Job | None = None
+        # Set when another program's page opened lyrembed (--return-url): its
+        # Done button ends lyrembed and sends the tab back there.
+        self.return_url = ""
+        self.return_name = ""
+        # Importing a CD: this page's own address (cdimport leads back to it),
+        # the cdimport found (checked once), the run, the album it brought.
+        self.page_url = ""
+        self._cdimport: tuple[bool, str | None] = (False, None)
+        self.importing: Import | None = None
+        self.imported = ""
         # Cover per (path, mtime): its id (a digest, so equal covers are
         # recognised) and where it is; None when the track has none.
         self._covers: dict[tuple[Path, float], dict | None] = {}
@@ -373,6 +456,8 @@ class WebSession:
 
     def library(self) -> dict:
         with self.lock:
+            # First, so the answer already shows an album cdimport just brought.
+            imported = self._take_imported()
             tracks = [self._summary(i, self.cache.get(p)) for i, p in enumerate(self.files)]
             covers = {t["cover"] for t in tracks}
             # One cover for every track is the album's: shown with the folder.
@@ -383,6 +468,15 @@ class WebSession:
                 "problem": self.problem,
                 "tracks": tracks,
                 "cover": shared,
+                # The quick romanization's starting point: off unless the
+                # setting batch mode follows is on.
+                "cdimport": bool(self.cdimport()) and not self.return_url,
+                "importing": bool(self.importing and self.importing.running),
+                "imported": imported,
+                "returnUrl": self.return_url,
+                "returnName": self.return_name or "the previous page",
+                "autoRomanize": bool(config.get("settings", "auto_romanize", False)),
+                "romanizeBelow": str(config.get("settings", "romanization_layout", "replace")).lower() == "below",
             }
 
     def open_folder(self, raw: str) -> dict:
@@ -405,7 +499,7 @@ class WebSession:
         elif self.base_dir is not None:
             path = self.base_dir.parent
         else:
-            path = Path.home()
+            path = core.music_folder()
         try:
             path = path.resolve()
             entries = sorted(path.iterdir(), key=lambda p: p.name.lower())
@@ -504,6 +598,23 @@ class WebSession:
         }
 
     @staticmethod
+    def auto_romanize(lyrics: str) -> dict:
+        """The quick romanization when saving a search result: what batch mode
+        does with settings.auto_romanize (detected script, configured layout).
+        *blocked* says why it cannot be done; lyrics with nothing to romanize
+        come back unchanged, without lyrics."""
+        result, reason = core.auto_romanize(lyrics)
+        key = text.detect_script(lyrics) if lyrics.strip() else ""
+        label = text.ROMANIZERS[key][0] if key in text.ROMANIZERS else ""
+        return {
+            "lyrics": result,
+            "reason": reason,
+            "blocked": reason if reason.endswith("is not installed") else "",
+            "language": label,
+            "below": str(config.get("settings", "romanization_layout", "replace")).lower() == "below",
+        }
+
+    @staticmethod
     def romanize(lyrics: str, key: str, han_default: str, keep_original: bool) -> dict:
         if key not in text.ROMANIZERS:
             raise ApiError(400, f"Unknown romanization: {key}")
@@ -570,6 +681,54 @@ class WebSession:
             except TaggingError as exc:
                 raise ApiError(500, str(exc)) from exc
         return {"track": self.track(index)}
+
+    # importing a CD
+    def cdimport(self) -> str | None:
+        checked, found = self._cdimport
+        if not checked:
+            found = find_cdimport()
+            self._cdimport = (True, found)
+        return found
+
+    def start_import(self) -> dict:
+        """Start cdimport on its own page, which leads back here; returns its
+        address. A run still going is joined instead of starting another."""
+        with self.lock:
+            if self.importing is not None and self.importing.running and self.importing.url:
+                return {"url": self.importing.url}
+            found = self.cdimport()
+            if found is None:
+                raise ApiError(404, "cdimport 0.6.0 or newer is not installed.")
+            if not self.page_url:
+                raise ApiError(409, "This page's address is not known.")
+            run = Import([found, "--web", "--no-browser", "--return-url", self.page_url, "--return-name", "lyrembed"])
+            self.importing = run
+        url = run.wait_for_page(20.0)
+        if not url:
+            last = "; ".join(run.lines[-3:]) or "no output"
+            raise ApiError(500, f"cdimport did not open its page: {last}")
+        return {"url": url}
+
+    def import_away(self) -> bool:
+        """The tab is on cdimport's page, or only just came back."""
+        run = self.importing
+        if run is None:
+            return False
+        return run.running or (run.ended_at is not None and time.monotonic() - run.ended_at < IMPORT_GRACE)
+
+    def _take_imported(self) -> str:
+        """Once cdimport is done: open the album it brought, and say so once."""
+        run = self.importing
+        if run is not None and not run.running and run.album is not None:
+            album, run.album = run.album, None
+            if album.is_dir():
+                try:
+                    self.open_folder(str(album))
+                    self.imported = album.name
+                except ApiError as exc:
+                    log.warning("cannot open the imported album: %s", exc.message)
+        imported, self.imported = self.imported, ""
+        return imported
 
     # bulk runs
     def start_job(self, action: str, indices: list, overwrite: bool = False, dry_run: bool = False,
@@ -724,7 +883,7 @@ class _Handler(BaseHTTPRequestHandler):
     def _cookie_token(self) -> str:
         for part in self.headers.get("Cookie", "").split(";"):
             name, _, value = part.strip().partition("=")
-            if name == COOKIE:
+            if name == cookie_name(self.server.port):
                 return value
         return ""
 
@@ -828,7 +987,7 @@ class _Handler(BaseHTTPRequestHandler):
             # The token leaves the address bar (and the history) at once.
             self._send(303, b"", "text/plain", {
                 "Location": "/",
-                "Set-Cookie": f"{COOKIE}={self.server.token}; HttpOnly; SameSite=Strict; Path=/",
+                "Set-Cookie": f"{cookie_name(self.server.port)}={self.server.token}; HttpOnly; SameSite=Strict; Path=/",
             })
             return
         if not self._authorized():
@@ -917,8 +1076,12 @@ class _Handler(BaseHTTPRequestHandler):
             return session.aliases()
         if method == "POST" and path == "/api/aliases":
             return session.save_aliases(body.get("groups"))
+        if method == "POST" and path == "/api/auto-romanize":
+            return session.auto_romanize(str(body.get("lyrics", "")))
         if method == "POST" and path == "/api/romanizers":
             return session.romanizers(str(body.get("lyrics", "")))
+        if method == "POST" and path == "/api/import":
+            return session.start_import()
         if method == "POST" and path == "/api/romanize":
             return session.romanize(str(body.get("lyrics", "")), str(body.get("key", "")),
                                     str(body.get("hanDefault", "zh")), bool(body.get("keepOriginal")))
@@ -946,17 +1109,24 @@ def serve(session: WebSession, open_browser: bool = True, port: int = 0) -> int:
     token = secrets.token_urlsafe(24)
     server = _Server(session, token, port)
     url = f"http://127.0.0.1:{server.port}/?token={token}"
+    # Where cdimport's page sends the tab back; the cookie is already set.
+    session.page_url = f"http://127.0.0.1:{server.port}/"
     thread = threading.Thread(target=server.serve_forever, name="lyrembed-web", daemon=True)
     thread.start()
     try:
+        # The first line's wording is read by cdimport (web._HANDOFF there).
         ui.info(f"lyrembed is running at {url}")
-        if not (open_browser and webbrowser.open(url)):
-            ui.info("Open that address in your browser.")
-        ui.info("Quit on the page, or press Ctrl+C here.")
+        opened = open_browser and webbrowser.open(url)
+        if session.return_url:
+            ui.info(f"Its Done button ends lyrembed and goes back to {session.return_name or 'the previous page'}.")
+        else:
+            if not opened:
+                ui.info("Open that address in your browser.")
+            ui.info("Quit on the page, or press Ctrl+C here.")
         # Whoever started lyrembed may be reading the address from a pipe.
         sys.stdout.flush()
         while not server.stop.wait(1.0):
-            if server.page_gone():
+            if server.page_gone() and not session.import_away():
                 ui.info("The page was closed - stopping.")
                 break
         if session.job is not None and session.job.running:

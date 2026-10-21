@@ -38,7 +38,7 @@ lyrembed = "lyrembed.cli:main"
 packages = ["lyrembed"]
 
 [tool.setuptools.package-data]
-lyrembed = ["aliases.json", "static/*.html", "static/*.js", "static/*.css", "static/vendor/*"]
+lyrembed = ["aliases.json", "static/*.html", "static/*.js", "static/*.css", "static/*.svg", "static/vendor/*"]
 
 [tool.setuptools.dynamic]
 # Single source of truth; read statically, the package is not imported.
