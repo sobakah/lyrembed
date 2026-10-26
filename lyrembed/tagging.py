@@ -15,6 +15,7 @@ from mutagen.oggopus import OggOpus
 from mutagen.oggvorbis import OggVorbis
 
 from . import config
+from .text import unix_newlines
 
 log = logging.getLogger(__name__)
 
@@ -325,7 +326,7 @@ def read_metadata(path: Path) -> TrackMeta:
     meta.album_artist = meta.album_artist.strip()
     meta.recording_id = meta.recording_id.strip()
     meta.language = meta.language.strip()
-    meta.lyrics = meta.lyrics.strip()
+    meta.lyrics = unix_newlines(meta.lyrics).strip()
     return meta
 
 

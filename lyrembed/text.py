@@ -81,19 +81,13 @@ def clean_tag(text: str) -> str:
     cleaned = text
     for key in ("feature_regex", "trailing_feature_regex"):
         pattern = config.get("cleaning", key)
-        if pattern:
-            try:
-                cleaned = _compiled(pattern, True).sub("", cleaned)
-            except re.error:
-                pass
+        if pattern:  # checked when the config is loaded or saved
+            cleaned = _compiled(pattern, True).sub("", cleaned)
 
     for key in ("korean_bracket_regex", "japanese_bracket_regex", "chinese_bracket_regex"):
         pattern = config.get("cleaning", key)
-        if pattern:
-            try:
-                cleaned = _compiled(pattern, False).sub("", cleaned)
-            except re.error:
-                pass
+        if pattern:  # checked when the config is loaded or saved
+            cleaned = _compiled(pattern, False).sub("", cleaned)
 
     if config.get("cleaning", "strip_all_brackets", False):
         cleaned = _strip_brackets(cleaned)
@@ -236,6 +230,15 @@ def _is_latin_char(char: str) -> bool:
         if code < low:
             return False
     return False
+
+
+def unix_newlines(text: str) -> str:
+    """Lyrics with Windows (CRLF) or old Mac (CR) line ends as plain LF.
+
+    The page's editor splits on LF, and a leftover CR kept every timestamp
+    line from matching, so synced lyrics showed as untimed.
+    """
+    return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
 def strip_timestamps(text: str) -> str:
@@ -447,40 +450,46 @@ def _kakasi_han_coverage(fragment: str) -> float:
     return sum(1 for char in han if _kakasi_reads(char)) / len(han)
 
 
-def _han_evidence(fragment: str) -> str | None:
+def _han_evidence(fragment: str, trust_ja: bool = False) -> str | None:
     """Look for proof that a Han run belongs to one writing system.
 
-    Chinese evidence wins over Japanese: a character pykakasi cannot read would
-    be lost if the run were sent to it.
+    Chinese evidence from the character sets wins over Japanese. A character
+    pykakasi cannot read counts as Chinese only when the text has no Kana
+    (*trust_ja* False): pykakasi lacks 17 of the JIS X 0208 kanji (唸, 萍,
+    錺, ...), and one of them made a Japanese song "mixed", so its other Han
+    runs were read as Pinyin. _romanize_japanese handles such a character.
     """
     votes = {_charset_evidence(char) for char in fragment if _char_class(char) == HAN}
-    if "zh" in votes or _kakasi_han_coverage(fragment) < 1.0:
+    if "zh" in votes:
         return "zh"
     if "ja" in votes:
         return "ja"
+    if not trust_ja and _kakasi_han_coverage(fragment) < 1.0:
+        return "zh"
     return None
 
 
-def _neighbour_kind(runs: list[tuple[str, str]], index: int, step: int, skip_space: bool) -> str | None:
-    """Kind of the neighbouring run, optionally looking past separators."""
+def _neighbour_kind(runs: list[tuple[str, str]], index: int, step: int, skip_keep: bool) -> str | None:
+    """Kind of the neighbouring run, optionally looking past spaces and
+    punctuation ('「夢」、そして')."""
     position = index + step
     while 0 <= position < len(runs):
         kind, fragment = runs[position]
-        if skip_space and kind == KEEP and not fragment.strip():
+        if skip_keep and kind == KEEP:
             position += step
             continue
         return kind
     return None
 
 
-def _line_looks_japanese(runs: list[tuple[str, str]]) -> bool:
+def _line_looks_japanese(runs: list[tuple[str, str]], trust_ja: bool = True) -> bool:
     """True when the line contains Kana and nothing pointing elsewhere."""
     if not any(kind == KANA for kind, _ in runs):
         return False
     if any(kind == HANGUL for kind, _ in runs):
         return False
     return not any(
-        kind == HAN and _han_evidence(fragment) == "zh" for kind, fragment in runs
+        kind == HAN and _han_evidence(fragment, trust_ja) == "zh" for kind, fragment in runs
     )
 
 
@@ -495,8 +504,8 @@ def _resolve_han(runs: list[tuple[str, str]], index: int, han_default: str,
     Character-level proof comes first, because a simplified form cannot occur in
     Japanese text no matter what surrounds it. Only then does context count:
     Kana touching the run, or - if nothing on the line points to another
-    language - Kana separated from it by spaces. Runs written purely in shared
-    characters stay ambiguous and follow the caller's choice.
+    language - Kana separated from it by spaces or punctuation. Runs written
+    purely in shared characters stay ambiguous and follow the caller's choice.
 
     Without *trust_ja* a character only Japanese standards contain is not
     proof: the whole text has no Kana, which Japanese lyrics practically always
@@ -505,19 +514,19 @@ def _resolve_han(runs: list[tuple[str, str]], index: int, han_default: str,
     """
     fragment = runs[index][1]
 
-    evidence = _han_evidence(fragment)
+    evidence = _han_evidence(fragment, trust_ja)
     if evidence == "zh" or (evidence == "ja" and trust_ja):
         return evidence
 
     if KANA in (
-        _neighbour_kind(runs, index, -1, skip_space=False),
-        _neighbour_kind(runs, index, +1, skip_space=False),
+        _neighbour_kind(runs, index, -1, skip_keep=False),
+        _neighbour_kind(runs, index, +1, skip_keep=False),
     ):
         return "ja"
 
-    if _line_looks_japanese(runs) and KANA in (
-        _neighbour_kind(runs, index, -1, skip_space=True),
-        _neighbour_kind(runs, index, +1, skip_space=True),
+    if _line_looks_japanese(runs, trust_ja) and KANA in (
+        _neighbour_kind(runs, index, -1, skip_keep=True),
+        _neighbour_kind(runs, index, +1, skip_keep=True),
     ):
         return "ja"
 
@@ -627,7 +636,7 @@ def romanize_single_segment(segment: str, lang: str) -> str:
 
 # --- romanization ------------------------------------------------------------
 ROMANIZERS = {
-    "mixed": ("Mixed scripts (detect per segment)", lambda: True, "—"),
+    "mixed": ("Mixed scripts (detect per segment)", lambda: HAS_KOREAN or HAS_KAKASI or HAS_PYPINYIN, "—"),
     "ko": ("Korean (Hangul → Romaja)", lambda: HAS_KOREAN, "korean-romanizer"),
     "ja": ("Japanese (Kanji/Kana → Rōmaji)", lambda: HAS_KAKASI, "pykakasi"),
     "zh": ("Mandarin (Hanzi → Pīnyīn)", lambda: HAS_PYPINYIN, "pypinyin"),
@@ -827,6 +836,17 @@ def detect_script(text: str) -> str | None:
     credit headers and LRC tags ([ti:...]) are ignored, because they are
     metadata rather than lyrics.
     """
+    asian, has_other = _asian_languages(text)
+    if len(asian) > 1:
+        return "mixed"
+    if asian:
+        return asian.pop()
+    return "any" if has_other else None
+
+
+def _asian_languages(text: str) -> tuple[set[str], bool]:
+    """The Asian languages in the lyrics ("ko", "ja", "zh"), and whether
+    other non-Latin letters occur."""
     asian: set[str] = set()
     has_other = False
     trust_ja = contains_kana(text)
@@ -842,15 +862,20 @@ def detect_script(text: str) -> str | None:
             elif kind == KANA:
                 asian.add("ja")
             elif kind == HAN:
-                evidence = _han_evidence(fragment)
+                evidence = _han_evidence(fragment, trust_ja)
                 if evidence == "ja" and not trust_ja:
                     evidence = None
                 asian.add(evidence or ("ja" if line_has_kana else "zh"))
             elif kind == OTHER:
                 has_other = True
 
-    if len(asian) > 1:
-        return "mixed"
-    if asian:
-        return asian.pop()
-    return "any" if has_other else None
+    return asian, has_other
+
+
+def missing_packages(text: str) -> list[str]:
+    """The romanization packages the lyrics' languages need but are not
+    installed. Mixed mode reported "already romanized" when they were all
+    missing, and half-converted lyrics when some were."""
+    asian, _ = _asian_languages(text)
+    return [ROMANIZERS[lang][2] for lang in ("ko", "ja", "zh")
+            if lang in asian and not ROMANIZERS[lang][1]()]

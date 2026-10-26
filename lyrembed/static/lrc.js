@@ -3,6 +3,8 @@
 // the tests run in Node (tests/lrc.test.mjs).
 
 // The same shapes text.py accepts: TIMESTAMP_REGEX and _LRC_META_REGEX.
+// Lines end in LF; CRLF from a pasted or old file must not break the match.
+const NEWLINE = /\r\n|\r|\n/;
 const LEAD = /^(\s*(?:\[\d{1,3}:\d{2}(?:[.:]\d{1,3})?\]\s*)+)(.*)$/;
 const STAMP = /\[(\d{1,3}):(\d{2})(?:[.:](\d{1,3}))?\]/g;
 const META = /^\s*\[[a-z]{2,}:[^\]]*\]\s*$/i;
@@ -28,7 +30,7 @@ export function formatStamp(value, digits = 2) {
 export function parse(text) {
   let offset = 0;
   let digits = 2;
-  const lines = text.split('\n').map((raw, n) => {
+  const lines = text.split(NEWLINE).map((raw, n) => {
     const tag = raw.match(OFFSET);
     if (tag) {
       offset = parseInt(tag[1], 10);
@@ -49,6 +51,14 @@ export function parse(text) {
 // When a written time plays, with the file's offset and the editor's shift.
 export function playTime(time, parsed, shiftMs) {
   return time - parsed.offset / 1000 + shiftMs / 1000;
+}
+
+// Of a line's timestamps (a repeated chorus), the one playing closest to
+// *position*. Compared as play times: with an offset or a shift, the written
+// times picked the wrong repeat.
+export function nearestTime(line, position, parsed, shiftMs) {
+  const at = (t) => playTime(t, parsed, shiftMs);
+  return line.times.reduce((a, b) => (Math.abs(at(b) - position) < Math.abs(at(a) - position) ? b : a));
 }
 
 // The lines to light up at *position*: those whose timestamp is the latest
@@ -76,7 +86,7 @@ export function currentLines(parsed, position, shiftMs) {
 export function applyShift(text, shiftMs) {
   const parsed = parse(text);
   const delta = shiftMs / 1000 - parsed.offset / 1000;
-  return text.split('\n')
+  return text.split(NEWLINE)
     .filter((raw) => !OFFSET.test(raw))
     .map((raw) => {
       if (META.test(raw)) return raw;
@@ -94,7 +104,7 @@ export function applyShift(text, shiftMs) {
 // line stays with its original. A line without one gets one.
 export function stampLine(text, n, time) {
   const parsed = parse(text);
-  const rows = text.split('\n');
+  const rows = text.split(NEWLINE);
   const line = parsed.lines[n];
   if (!line || line.meta) return text;
   const stamp = formatStamp(time, parsed.digits);

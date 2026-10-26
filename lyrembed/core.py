@@ -104,9 +104,13 @@ class DirectoryProblem:
 
 def check_music_directory(resolved: Path) -> tuple[list[Path] | None, DirectoryProblem | None]:
     """Scan *resolved*: its music files, or why it cannot be used."""
-    if resolved == Path.home() or resolved == Path(resolved.anchor):
+    # Resolved too: on Fedora Atomic /home is a link to /var/home. The
+    # folders above home (/home) hold every user's files, and a drive's root
+    # (D:\\) all of the drive.
+    home = Path.home().resolve()
+    if resolved == home or resolved in home.parents or resolved == Path(resolved.anchor):
         return None, DirectoryProblem(
-            f"Execution in root or home directory ('{resolved}') detected.\n"
+            f"'{resolved}' is the home folder, a folder above it or a drive's root.\n"
             "To prevent unintended large-scale scans, please select a specific music folder."
         )
     if resolved.is_dir():
@@ -157,6 +161,7 @@ def write_lyrics(path: Path, lyrics: str) -> list[str]:
     reporting the whole write as failed made users retry a write that worked.
     """
     warnings = []
+    lyrics = text.unix_newlines(lyrics)
     try:
         tagging.embed_lyrics(path, lyrics)
     except tagging.SidecarError as exc:
@@ -278,6 +283,11 @@ def find_automatic(meta: TrackMeta) -> tuple[SearchReport, Candidate | None]:
     return report, providers.pick_automatic(report, meta.duration)
 
 
+def _not_installed(packages: list[str]) -> str:
+    names = " and ".join(f"'{name}'" for name in packages)
+    return f"{names} {'is' if len(packages) == 1 else 'are'} not installed"
+
+
 def auto_romanize(lyrics: str) -> tuple[str | None, str]:
     """Romanize without asking: detected script, configured layout.
 
@@ -292,8 +302,9 @@ def auto_romanize(lyrics: str) -> tuple[str | None, str]:
     if key not in text.ROMANIZERS:
         return None, "no script to romanize"
     _, available, package = text.ROMANIZERS[key]
-    if not available():
-        return None, f"'{package}' is not installed"
+    missing = text.missing_packages(lyrics) if key == "mixed" else [] if available() else [package]
+    if missing:
+        return None, _not_installed(missing)
     below = str(config.get("settings", "romanization_layout", "replace")).lower() == "below"
     result = text.romanize_lyrics(lyrics, key, keep_original=below)
     if result == lyrics:
@@ -505,6 +516,11 @@ def bulk(action: str, files: list[Path], base_dir: Path, cache: MetadataCache, b
                 existing = sidecar.read_text(encoding="utf-8") if sidecar.is_file() else None
             except OSError as exc:
                 yield outcome("failed", f"could not read '{sidecar.name}': {exc}")
+                continue
+            except UnicodeDecodeError:
+                # Its backup is kept as text, so it cannot be replaced safely.
+                yield outcome("failed", f"'{sidecar.name}' is not UTF-8 text; left alone. "
+                                        "Convert or remove it, then export again.")
                 continue
             if existing == meta.lyrics:
                 yield outcome("skipped", f"{sidecar.name} is up to date, skipped.")

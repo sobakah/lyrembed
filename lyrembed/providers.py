@@ -35,6 +35,7 @@ from .text import (
     is_header_line,
     script_label,
     matches_artist,
+    unix_newlines,
     matches_title,
 )
 
@@ -129,7 +130,7 @@ class Candidate:
     @classmethod
     def build(cls, *, provider, artist, title, album, text, duration=0, track_duration=0,
               exact=False, unverified=False, url=""):
-        text = text.strip()
+        text = unix_newlines(text).strip()
         script = script_label(text)
         has_duration = bool(duration)
         diff = abs(duration - track_duration) if (duration and track_duration) else 0
@@ -1005,6 +1006,10 @@ class SearchCache:
             _cleaned(artist).lower(),
             clean_tag(album).lower(),
             int(duration or 0),
+            # Cleaning drops '(カラオケ)' and '(伴奏)', and an off-vocal track is
+            # as long as the sung one: without the marker it got the sung
+            # track's results instead of filtering them out.
+            (instrumental_marker(title) or "").lower(),
         )
 
     def get(self, key: tuple) -> CachedSearch | None:
@@ -1081,18 +1086,23 @@ def _classify(collected: list[Candidate], title: str, artist: str) -> tuple[list
     # Of several uploads with the same text, keep the best one, not the first:
     # results arrive in whatever order the requests finish, and keeping the
     # first let a cover hide the original or a fuzzy hit hide the exact one.
+    # A copy whose length fits wins before rank_key: LRCLIB's /get without
+    # the duration still counts as exact, and an exact copy of another
+    # version (60 s longer) hid a fitting one, so batch mode took neither.
+    tolerance = _tolerance()
     best: dict[str, tuple[tuple, Candidate]] = {}
     for candidate in collected:
         candidate.match_artist = matches_artist(clean_a, candidate.artist)
         candidate.match_title = _title_fits(title, candidate)
         fits = is_related(candidate, searched_instrumental)
         fingerprint = " ".join(candidate.text.split())
-        key = (0 if fits else 1, rank_key(candidate))
+        too_long = bool(candidate.track_duration and candidate.has_duration and candidate.diff > tolerance)
+        key = (0 if fits else 1, too_long, rank_key(candidate))
         if fingerprint not in best or key < best[fingerprint][0]:
             best[fingerprint] = (key, candidate)
     related: list[Candidate] = []
     unrelated: list[Candidate] = []
-    for (rank, _), candidate in best.values():
+    for (rank, *_), candidate in best.values():
         (unrelated if rank else related).append(candidate)
     return related, unrelated
 

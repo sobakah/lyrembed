@@ -488,6 +488,10 @@ class WebSession:
         if problem is not None:
             raise ApiError(400, problem.message)
         with self.lock:
+            # The run's rows point at tracks by their number in this folder.
+            if self.job is not None and self.job.running:
+                raise ApiError(409, "A bulk run is still going; stop it or wait for it to finish "
+                                    "before opening another folder.")
             self.base_dir, self.files, self.problem = resolved, core.sort_files(files, self.cache), ""
         return self.library()
 
@@ -561,6 +565,8 @@ class WebSession:
         or for ALAC a FLAC copy, made once per version of the file."""
         with self.lock:
             path = self._meta(index).path
+        if not path.is_file():
+            raise ApiError(404, f"'{path.name}' is no longer there; it was moved or deleted.")
         if not _is_alac(path):
             return path, _AUDIO_TYPES.get(path.suffix.lower(), "application/octet-stream")
         ffmpeg = shutil.which("ffmpeg")
@@ -609,7 +615,7 @@ class WebSession:
         return {
             "lyrics": result,
             "reason": reason,
-            "blocked": reason if reason.endswith("is not installed") else "",
+            "blocked": reason if reason.endswith("not installed") else "",
             "language": label,
             "below": str(config.get("settings", "romanization_layout", "replace")).lower() == "below",
         }
@@ -619,8 +625,10 @@ class WebSession:
         if key not in text.ROMANIZERS:
             raise ApiError(400, f"Unknown romanization: {key}")
         _, available, package = text.ROMANIZERS[key]
-        if not available():
-            raise ApiError(400, f"The Python package '{package}' is not installed.")
+        missing = text.missing_packages(lyrics) if key == "mixed" else [] if available() else [package]
+        if missing:
+            raise ApiError(400, f"Romanizing these lyrics needs {', '.join(missing)}, which "
+                                f"{'is' if len(missing) == 1 else 'are'} not installed.")
         if han_default not in ("zh", "ja"):
             han_default = "zh"
         return {"lyrics": text.romanize_lyrics(lyrics, key, han_default=han_default, keep_original=keep_original)}
@@ -719,7 +727,8 @@ class WebSession:
     def _take_imported(self) -> str:
         """Once cdimport is done: open the album it brought, and say so once."""
         run = self.importing
-        if run is not None and not run.running and run.album is not None:
+        busy = self.job is not None and self.job.running
+        if run is not None and not run.running and run.album is not None and not busy:
             album, run.album = run.album, None
             if album.is_dir():
                 try:
@@ -780,8 +789,7 @@ class WebSession:
             groups.append({"name": "More", "settings": [_setting_json(s, k) for s, k in more]})
         return {"path": str(config.user_config_path()), "groups": groups}
 
-    @staticmethod
-    def save_settings(changes: list) -> dict:
+    def save_settings(self, changes: list) -> dict:
         grouped: dict[str, dict] = {}
         for change in changes:
             if not isinstance(change, dict):
@@ -794,7 +802,16 @@ class WebSession:
             path = config.save_settings(grouped)
         except config.ConfigError as exc:
             raise ApiError(400, str(exc)) from exc
+        self._settings_changed(rebuild_session="api" in grouped)
         return {"path": str(path), **WebSession.settings()}
+
+    def _settings_changed(self, rebuild_session: bool = False) -> None:
+        """Cached searches were ranked and matched with the old settings and
+        aliases; the HTTP session keeps the retries it was built with."""
+        with self.lock:
+            self.searches.clear()
+        if rebuild_session:
+            providers.close_session()
 
     @staticmethod
     def aliases() -> dict:
@@ -805,8 +822,7 @@ class WebSession:
             "path": str(config.user_config_path()),
         }
 
-    @staticmethod
-    def save_aliases(groups: list) -> dict:
+    def save_aliases(self, groups: list) -> dict:
         cleaned = []
         for group in groups if isinstance(groups, list) else []:
             names = [str(n).strip() for n in group if str(n).strip()] if isinstance(group, list) else []
@@ -818,6 +834,7 @@ class WebSession:
             config.save_settings({}, aliases=cleaned)
         except config.ConfigError as exc:
             raise ApiError(400, str(exc)) from exc
+        self._settings_changed()
         return WebSession.aliases()
 
     @staticmethod
@@ -1007,7 +1024,10 @@ class _Handler(BaseHTTPRequestHandler):
     def _audio(self, index: int) -> None:
         """Serve a track with byte ranges: without them a browser cannot seek."""
         path, content_type = self.server.session.audio(index)
-        size = path.stat().st_size
+        try:
+            size = path.stat().st_size
+        except OSError as exc:
+            raise ApiError(404, f"'{path.name}' cannot be read: {exc.strerror}") from exc
         start, end, status = 0, size - 1, 200
         wanted = self.headers.get("Range")
         if wanted:

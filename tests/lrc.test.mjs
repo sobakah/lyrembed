@@ -2,7 +2,7 @@
 // test_lrc_editor_functions, or directly: node --test tests/lrc.test.mjs
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parse, currentLines, applyShift, stampLine, formatStamp, playTime } from '../lyrembed/static/lrc.js';
+import { parse, currentLines, applyShift, stampLine, formatStamp, playTime, nearestTime } from '../lyrembed/static/lrc.js';
 
 test('formats and clamps timestamps', () => {
   assert.equal(formatStamp(83.456), '[01:23.46]');
@@ -57,4 +57,21 @@ test('stamping a repeated line changes the nearest occurrence', () => {
 test('stamping a plain line gives it a timestamp; meta lines stay', () => {
   assert.equal(stampLine('first\n  second', 1, 4.2), 'first\n[00:04.20]second');
   assert.equal(stampLine('[ti:Song]', 0, 3), '[ti:Song]');
+});
+
+test('Windows line ends keep their timestamps', () => {
+  const crlf = '[00:01.00]one\r\n[00:02.00]two\r\n';
+  assert.deepEqual(parse(crlf).lines.map((l) => l.times), [[1], [2], []]);
+  assert.equal(parse(crlf).lines[0].text, 'one');
+  assert.equal(applyShift(crlf, 500), '[00:01.50]one\n[00:02.50]two\n');
+  assert.equal(stampLine(crlf, 0, 1.4), '[00:01.40]one\n[00:02.00]two\n');
+});
+
+test('clicking a repeated line picks the repeat by play time', () => {
+  // [offset:-20000]: 00:30 plays at 00:50, 01:00 at 01:20. At 00:52 the
+  // first repeat plays; by written time the second looked closer.
+  const parsed = parse('[offset:-20000]\n[00:30.00][01:00.00]chorus');
+  assert.equal(nearestTime(parsed.lines[1], 52, parsed, 0), 30);
+  const plain = parse('[00:30.00][01:00.00]x');
+  assert.equal(nearestTime(plain.lines[0], 52, plain, 20000), 30);   // the same with a shift
 });

@@ -1,7 +1,7 @@
 // lyrembed's page. Everything it shows comes from the local server's JSON API
 // (lyrembed/web.py), and every change to a file is a request to it.
 import { html, render, useState, useEffect, useRef, useCallback, useMemo } from '/static/vendor/preact-htm.js';
-import { parse, currentLines, applyShift, stampLine, formatStamp, playTime } from '/static/lrc.js';
+import { parse, currentLines, applyShift, stampLine, formatStamp, playTime, nearestTime } from '/static/lrc.js';
 
 async function api(path, body, signal) {
   const options = { signal };
@@ -89,6 +89,7 @@ function App() {
   // "Romanize when saving" stays as set while working through an album.
   const [romanizeOnSave, setRomanizeOnSave] = useState(null);
   const previewAudio = useRef(null);
+  const pollFailed = useRef(false);
   // Set by the editor; checked before anything leaves it.
   const dirty = useRef(false);
 
@@ -165,11 +166,15 @@ function App() {
     const timer = setTimeout(async () => {
       try {
         const { job: next } = await api(`/jobs/current?since=${job.rows.length}`);
+        pollFailed.current = false;
         if (!next) { setJob(null); return; }
         setJob({ ...next, rows: job.rows.concat(next.rows) });
         if (!next.running) api('/library').then(setLibrary).catch(() => {});
       } catch (err) {
-        notify(err.message, 'error');
+        // One failed request must not end the updates: ask again, a bit later.
+        if (!pollFailed.current) notify(err.message, 'error');
+        pollFailed.current = true;
+        setTimeout(() => setJob((current) => (current === job ? { ...job } : current)), 2000);
       }
     }, 500);
     return () => clearTimeout(timer);
@@ -1144,8 +1149,7 @@ function Editor({ track, initial, source, versions, chosen, dirty, onBack, onNex
   const pick = (line) => {
     setSelected(line.n);
     if (line.times.length && audio.current) {
-      const nearest = line.times.reduce((a, b) => (Math.abs(b - pos) < Math.abs(a - pos) ? b : a));
-      seek(playTime(nearest, parsed, shift));
+      seek(playTime(nearestTime(line, pos, parsed, shift), parsed, shift));
     }
   };
 

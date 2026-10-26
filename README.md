@@ -2,7 +2,7 @@
 
 Vibecoded tool for Linux, macOS and Windows to search, check, romanize and embed synchronized (`.lrc`) and plain lyrics into FLAC, MP3, OGG Vorbis, Opus and M4A files, with a focus on East Asian music. You work on a page in your browser that only your own computer can reach; batch mode runs in the terminal.
 
-Version 0.9.0 · Python 3.10+ · MIT
+Version 1.0.0 · Python 3.10+ · MIT
 
 Formerly called **lrckit**; see the [changelog](CHANGELOG.md) for moving an existing setup. Version 0.8.0 replaced the terminal menus with the browser page.
 
@@ -96,7 +96,7 @@ lyrembed ~/Music/Artist --auto        # tag everything with a confident match
 lyrembed ~/Music/Artist --auto --dry-run
 ```
 
-Without `--auto`, lyrembed opens its page in your default browser and prints the page's address. Only this computer can open it, and only with the secret address lyrembed prints. Quit on the page or press Ctrl+C in the terminal; closing the tab ends lyrembed too, after a short while. If the folder can't be used (it doesn't exist, has no music, or is your home folder), the page asks for another one. Started without a folder in your home folder, as the app menu does, the folder picker opens in your music folder.
+Without `--auto`, lyrembed opens its page in your default browser and prints the page's address. Only this computer can open it, and only with the secret address lyrembed prints. Quit on the page or press Ctrl+C in the terminal; closing the tab ends lyrembed too, after a short while. If the folder can't be used (it doesn't exist, has no music, or is your home folder or a folder above it), the page asks for another one. Started without a folder in your home folder, as the app menu does, the folder picker opens in your music folder.
 
 | Option | Effect |
 |---|---|

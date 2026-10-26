@@ -3,6 +3,50 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.0.0] — 2026-10-26
+
+The first stable release. lyrembed finds synchronized and plain lyrics for
+an album (LRCLIB, NetEase, QQ Music, Megalobiz), checks that they belong
+to the track, romanizes Korean, Japanese and Chinese lyrics, and embeds
+them into FLAC, MP3, OGG Vorbis, Opus and M4A files. You work on a page in
+your browser, served by lyrembed on this computer: the track list with
+covers, search results next to a preview, an editor that plays the track,
+bulk actions, settings and artist aliases. `--auto` tags a whole folder in
+the terminal without asking, also from cron. With cdimport installed, a
+CD can be imported from the page.
+
+### Fixed
+
+* **Synced lyrics with Windows line ends** showed as untimed in the
+  editor, and shifting or stamping them failed. Lyrics now get plain line
+  ends when read from a file, taken from a provider or saved.
+* **A fitting result could be thrown out.** Of several results with the
+  same text, the one whose length fits the track is now kept; before, an
+  exact match of a longer version won, and batch mode then took neither.
+* **An off-vocal track showed the sung track's results** when both have
+  the same length: `Song (カラオケ)` and `Song` shared a cached search.
+* **Japanese lyrics with a rare kanji** (one pykakasi has no reading for,
+  such as 唸) counted as mixed with Chinese, and their kanji came out as
+  Pinyin. Kanji between punctuation on a Japanese line (`「夢」、そして`)
+  are read as Japanese too.
+* **Mixed-script romanization without its packages** said "already
+  romanized"; it now names the missing packages instead of converting
+  only part of the lyrics.
+* **Exporting sidecars** stopped the whole run at an `.lrc` file that is
+  not UTF-8; that file is now left alone and reported.
+* **The page:** saved settings and aliases apply to the next search
+  instead of a cached one; a failed update no longer freezes the bulk
+  run's progress; clicking a repeated line with an offset or shift jumps
+  to the right repeat; no other folder opens while a bulk run goes; a
+  track removed from disk gives a clear message instead of an internal
+  error.
+* **Folder check:** the folders above your home folder are refused too,
+  also when `/home` is a link (Fedora Atomic).
+* **Config:** an invalid `cleaning` regex, a `non_latin_ratio_threshold`
+  above 1 and a `uslt_language` that is not three letters are reported
+  and replaced by the default; the settings page refuses them. Before,
+  a broken regex was skipped without a word.
+
 ## [0.9.0] — 2026-10-21
 
 ### Added
@@ -654,6 +698,7 @@ LRCLIB, NetEase and `syncedlyrics`; confidence-aware ranking; batch mode with
   time. Traditional Chinese resolves less often than simplified for this
   reason.
 
+[1.0.0]: https://github.com/sobakah/lyrembed/releases/tag/1.0.0
 [0.9.0]: https://github.com/sobakah/lyrembed/releases/tag/0.9.0
 [0.8.0]: https://github.com/sobakah/lyrembed/releases/tag/0.8.0
 [0.7.0]: https://github.com/sobakah/lyrembed/releases/tag/0.7.0

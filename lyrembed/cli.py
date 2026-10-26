@@ -127,7 +127,7 @@ def _serve_web(path: Path, cache: MetadataCache, open_browser: bool, explicit: b
     resolved = path.expanduser().resolve()
     files, problem = core.check_music_directory(resolved)
     message = problem.message if problem else ""
-    if not explicit and resolved in (Path.home(), Path(resolved.anchor)):
+    if not explicit and resolved in (Path.home().resolve(), Path(resolved.anchor)):
         message = ""
     session = web.WebSession(resolved if files else None, core.sort_files(files, cache) if files else [],
                              cache, message)

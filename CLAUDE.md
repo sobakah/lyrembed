@@ -34,7 +34,7 @@ tests/lrc.test.mjs         Node tests for static/lrc.js (run by the pytest suite
 
 ```bash
 pip install -e ".[all,dev]"     # all optional backends plus pytest/pyflakes
-pytest -q                       # 185 tests; 21 skip without the optional backends,
+pytest -q                       # 198 tests; 23 skip without the optional backends,
                                 # 2 more without ffmpeg or node
 python -m pyflakes lyrembed/ tests/ run.py
 python run.py --version
@@ -66,6 +66,12 @@ for shinjitai such as `駅` and `気`. CP950, not plain Big5 (lacks the variant
 `裏`) nor Big5-HKSCS (contains `駅`, `円`). Japanese-only evidence counts only
 when the text has Kana (`trust_ja`): rarer Hong Kong variants such as `峯` are
 in no Chinese standard, and Japanese lyrics practically always contain Kana.
+For the same reason a Han character pykakasi cannot read is Chinese evidence
+only in text without Kana: pykakasi lacks 17 of the JIS X 0208 kanji (`唸`,
+`萍`, `錺`, ...), and one of them made a Japanese song "mixed", so its other
+Han runs came out as Pinyin. On a line with Kana, a Han run separated from
+Kana by punctuation (`「夢」、そして`) counts as Japanese, as one separated by
+spaces does.
 
 **Romanization works on script runs, never on whole lines.** Handing a full
 line to one backend destroys what another produced (tone marks are not ASCII
@@ -180,7 +186,10 @@ then written into the timestamps. `applyShift` also folds a file's
 `[offset:]` tag in and drops it, because players treat that tag differently.
 A positive offset shows lyrics *earlier* (play time = timestamp - offset).
 Stamping a line moves the lines right below it that share its timestamp, so a
-romanized line stays with its original.
+romanized line stays with its original. Lyrics get plain LF line ends where
+they enter (`text.unix_newlines`: tags read, provider results, writing), and
+`lrc.js` splits on CRLF too: a leftover CR kept every timestamp line from
+matching, so synced lyrics showed as untimed.
 
 **Audio needs byte ranges, and ALAC needs a copy.** Without `Range` support a
 browser cannot seek. Chrome and Firefox refuse Apple Lossless in M4A

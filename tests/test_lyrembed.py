@@ -2244,10 +2244,11 @@ def test_settings_page_lists_every_setting_once(cfg):
     assert layout["choices"] == ["replace", "below"] and layout["help"]
 
 
-def test_aliases_from_the_page(cfg, config_home):
+def test_aliases_from_the_page(cfg, config_home, tmp_path):
+    session = web.WebSession(tmp_path, [], tagging.MetadataCache())
     with pytest.raises(web.ApiError):
-        web.WebSession.save_aliases([["Lonely"]])
-    result = web.WebSession.save_aliases([["Test Artist", " テスト歌手 "], []])
+        session.save_aliases([["Lonely"]])
+    result = session.save_aliases([["Test Artist", " テスト歌手 "], []])
     assert result["user"] == [["Test Artist", "テスト歌手"]]
     assert ("Test Artist", "テスト歌手") in config.alias_groups()
     assert json.loads(config_home.read_text(encoding="utf-8"))["aliases"] == [["Test Artist", "テスト歌手"]]
@@ -2575,7 +2576,7 @@ def test_started_from_the_menu_the_page_asks_without_a_warning(tmp_path, monkeyp
     monkeypatch.setattr(web, "serve", lambda session, open_browser=True, port=0: problems.append(session.problem) or 0)
     assert cli.main([]) == 0                    # the app menu gives no folder
     assert cli.main([str(home)]) == 0           # typed on purpose: say why it is not used
-    assert problems[0] == "" and "home directory" in problems[1]
+    assert problems[0] == "" and "home folder" in problems[1]
 
 
 def test_quick_romanization_does_what_batch_mode_does(cfg, monkeypatch):
@@ -2694,3 +2695,158 @@ def test_two_pages_on_one_host_keep_their_own_cookie(web_server):
     assert other != web.cookie_name(web_server.port)
     response, _ = _http(web_server, "GET", "/api/library", cookie=False, headers={"Cookie": f"{other}={TOKEN}"})
     assert response.status == 403
+
+
+# --- review of 2026-10-26 ----------------------------------------------------
+def test_windows_line_ends_become_plain_ones(cfg, tmp_path):
+    track = _flac_with_lyrics(tmp_path / "a.flac", "[00:01.00]one\r\n[00:02.00]two\r\n")
+    assert tagging.MetadataCache().get(track).lyrics == "[00:01.00]one\n[00:02.00]two"
+    assert "\r" not in _built(artist="A", title="S", text="[00:01.00]one\r\n[00:02.00]two").text
+    core.write_lyrics(track, "[00:01.00]a\r\n[00:02.00]b")
+    from mutagen.flac import FLAC
+
+    assert FLAC(track)["LYRICS"] == ["[00:01.00]a\n[00:02.00]b"]
+
+
+def test_of_two_copies_of_a_text_the_one_that_fits_the_length_stays(cfg):
+    # LRCLIB's /get without the duration still counts as exact; its record
+    # of a 60 s longer version hid the fitting copy, and batch mode took neither.
+    lyrics = "[00:01.00]la la\n[00:03.00]na na"
+    longer = _built(provider="LRCLIB", artist="A", title="Song", text=lyrics, duration=260, exact=True)
+    fitting = _built(provider="LRCLIB", artist="A", title="Song", text=lyrics, duration=200)
+    related, _ = providers._classify([fitting, longer], "Song", "A")
+    assert related == [fitting]
+    assert providers.pick_automatic(providers.SearchReport(candidates=related), 200) is fitting
+
+
+def test_an_off_vocal_track_gets_its_own_cache_slot(cfg):
+    key = providers.SearchCache.key
+    assert key("Song", "A", "", 200) != key("Song (カラオケ)", "A", "", 200)
+    assert key("Song", "A", "", 200) != key("Song (伴奏)", "A", "", 200)
+    assert key("Song (Inst.)", "A", "", 200) == key("song (inst.)", "a", "", 200)
+
+
+def test_sidecar_export_leaves_a_sidecar_that_is_not_utf8(cfg, tmp_path, state_dir):
+    music = tmp_path / "music"
+    music.mkdir()
+    first = _flac_with_lyrics(music / "a.flac", "[00:01.00]新しい")
+    second = _flac_with_lyrics(music / "b.flac", "[00:01.00]second")
+    old = "[00:01.00]古い".encode("shift_jis")
+    tagging.sidecar_path(first).write_bytes(old)
+    steps = list(core.bulk("sidecars", [first, second], music, tagging.MetadataCache(), core.backup_directory()))
+    outcomes = [s for s in steps if isinstance(s, core.Outcome)]
+    assert [o.result for o in outcomes] == ["failed", "done"]     # the run goes on
+    assert "not UTF-8" in outcomes[0].message
+    assert tagging.sidecar_path(first).read_bytes() == old
+
+
+def test_mixed_romanization_names_the_missing_packages(cfg, monkeypatch):
+    lyrics = "[00:01.00]사랑해요\n[00:02.00]ありがとう"
+    for name in ("HAS_KOREAN", "HAS_KAKASI", "HAS_PYPINYIN", "HAS_ANYASCII"):
+        monkeypatch.setattr(text, name, False)
+    assert core.auto_romanize(lyrics) == (None, "'korean-romanizer' and 'pykakasi' are not installed")
+    assert web.WebSession.auto_romanize(lyrics)["blocked"]
+    monkeypatch.setattr(text, "HAS_KOREAN", True)
+    # Half-romanized lyrics are worse than none.
+    assert core.auto_romanize(lyrics) == (None, "'pykakasi' is not installed")
+    with pytest.raises(web.ApiError):
+        web.WebSession.romanize(lyrics, "mixed", "zh", False)
+
+
+@pytest.mark.skipif(not text.HAS_KAKASI, reason="pykakasi required")
+def test_a_kanji_pykakasi_cannot_read_does_not_make_japanese_lyrics_chinese(cfg):
+    assert not text._kakasi_reads("唸")                 # in JIS X 0208, not in pykakasi
+    assert text.detect_script("[00:01.00]唸る声 君の夢\n[00:02.00]夜の街") == "ja"
+    # Without Kana it still points to Chinese, and simplified forms always do.
+    assert text.detect_script("我爱你\n东京") == "zh"
+    assert text.detect_script("我爱你\n君の夢") == "mixed"
+
+
+@pytest.mark.skipif(not (text.HAS_KAKASI and text.HAS_PYPINYIN), reason="pykakasi and pypinyin required")
+def test_kanji_between_punctuation_on_a_japanese_line_reads_as_japanese(cfg):
+    out = text.romanize_lyrics("「夢」、そして\n我爱你", "mixed")
+    assert out.splitlines() == ["「yume」、soshite", "wǒ ài nǐ"]
+
+
+def test_saved_settings_and_aliases_are_used_by_the_next_search(cfg, config_home, tmp_path, monkeypatch):
+    session, _ = _searchable(tmp_path, "Song", "Artist")
+    calls = []
+
+    def collect(title, artist, album, duration, aliases=False):
+        calls.append(title)
+        return providers.SearchReport()
+
+    monkeypatch.setattr(providers, "collect_candidates", collect)
+    closed = []
+    monkeypatch.setattr(providers, "close_session", lambda: closed.append(True))
+    session.search(0)
+    session.search(0)
+    assert len(calls) == 1                       # cached
+    session.save_settings([{"section": "settings", "key": "prefer_latin", "value": True}])
+    session.search(0)
+    assert len(calls) == 2 and not closed
+    session.save_aliases([["Artist", "Other Name"]])
+    session.search(0)
+    assert len(calls) == 3
+    session.save_settings([{"section": "api", "key": "retry_total", "value": 4}])
+    assert closed                                # the HTTP session takes the new retries
+
+
+def test_no_other_folder_while_a_bulk_run_goes(cfg, tmp_path):
+    import types
+
+    other = tmp_path / "other"
+    other.mkdir()
+    _make_flac(other / "x.flac")
+    session = web.WebSession(tmp_path, [], tagging.MetadataCache())
+    session.job = types.SimpleNamespace(running=True)
+    with pytest.raises(web.ApiError) as busy:
+        session.open_folder(str(other))
+    assert busy.value.status == 409 and session.base_dir == tmp_path
+
+
+def test_a_track_removed_from_disk_is_not_an_internal_error(cfg, tmp_path):
+    track = _make_flac(tmp_path / "a.flac")
+    session = web.WebSession(tmp_path, [track], tagging.MetadataCache())
+    session.track(0)
+    track.unlink()
+    with pytest.raises(web.ApiError) as gone:
+        session.audio(0)
+    assert gone.value.status == 404 and "a.flac" in gone.value.message
+
+
+def test_home_reached_through_a_link_and_the_folders_above_it_are_refused(tmp_path, monkeypatch):
+    real = tmp_path / "var" / "home"
+    (real / "user").mkdir(parents=True)
+    (tmp_path / "home").symlink_to(real)               # Fedora Atomic: /home -> /var/home
+    monkeypatch.setenv("HOME", str(tmp_path / "home" / "user"))
+    for folder in (real / "user", real, tmp_path / "home" / "user"):
+        _, problem = core.check_music_directory(folder.resolve())
+        assert problem is not None and "home folder" in problem.message, folder
+
+
+def test_unusable_patterns_ratios_and_language_codes_are_reported(tmp_path, cfg):
+    path = tmp_path / "config.json"
+    path.write_text(
+        '{"aliases": [["BTS", "Bangtan Boys"], ["IU", 5]],'
+        ' "cleaning": {"feature_regex": "(unclosed"},'
+        ' "settings": {"non_latin_ratio_threshold": 2.0, "uslt_language": "de"}}',
+        encoding="utf-8",
+    )
+    merged, warnings = config.load_config(path)
+    joined = " ".join(warnings)
+    assert merged["cleaning"]["feature_regex"] == config.DEFAULT_CONFIG["cleaning"]["feature_regex"]
+    assert "not a valid regular expression" in joined
+    assert merged["settings"]["non_latin_ratio_threshold"] == 0.1 and "at most 1" in joined
+    assert merged["settings"]["uslt_language"] == "eng" and "three-letter" in joined
+    assert merged["aliases"] == [["BTS", "Bangtan Boys"]]     # the warning says "ignoring"
+    assert config.setting_problem("cleaning", "feature_regex", "[") is not None
+    assert config.setting_problem("cleaning", "feature_regex", "") is None
+    assert config.setting_problem("settings", "uslt_language", "jpn") is None
+
+
+def test_the_launcher_names_the_package_files_there_are():
+    source = (Path(__file__).resolve().parent.parent / "run.py").read_text(encoding="utf-8")
+    listed = set(re.findall(r'"([^"]+\.py)"', re.search(r"modules = \[(.*?)\]", source, re.S).group(1)))
+    package = Path(__file__).resolve().parent.parent / "lyrembed"
+    assert listed == {p.name for p in package.glob("*.py")}

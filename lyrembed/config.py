@@ -6,6 +6,7 @@ import copy
 import json
 import logging
 import os
+import re
 from functools import lru_cache
 from importlib import resources
 from pathlib import Path
@@ -13,7 +14,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-__version__ = "0.9.0"
+__version__ = "1.0.0"
 PROJECT_URL = "https://github.com/sobakah/lyrembed"
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -329,11 +330,27 @@ _CHOICES: dict[tuple[str, str], tuple] = {
 }
 
 
+_MAXIMUMS: dict[tuple[str, str], float] = {
+    ("settings", "non_latin_ratio_threshold"): 1,
+}
+
+
 def _out_of_range(section: str, key: str, value: Any) -> str | None:
     """Why a value of the right type cannot be used, or None."""
     minimum = _MINIMUMS.get((section, key))
     if minimum is not None and value < minimum:
         return f"must be at least {minimum}"
+    maximum = _MAXIMUMS.get((section, key))
+    if maximum is not None and value > maximum:
+        return f"must be at most {maximum}"
+    if section == "cleaning" and key.endswith("_regex") and value:
+        # A broken pattern used to be skipped without a word when cleaning.
+        try:
+            re.compile(value)
+        except re.error as exc:
+            return f"is not a valid regular expression ({exc})"
+    if (section, key) == ("settings", "uslt_language") and not re.fullmatch(r"[A-Za-z]{3}", value):
+        return "must be a three-letter language code such as 'eng' or 'jpn'"
     choices = _CHOICES.get((section, key))
     if choices is not None:
         normalized = value.lower() if isinstance(value, str) else value
@@ -393,6 +410,7 @@ def _validate(merged: dict, user: dict, source: Path) -> list[str]:
                     f"{source}: 'aliases' must be a list of groups such as "
                     f"[[\"BTS\", \"Bangtan Boys\"]]; ignoring {', '.join(invalid)}."
                 )
+                merged[section] = [group for group in values if not _invalid_alias_groups([group])]
             continue
         if not isinstance(default_section, dict):
             continue
