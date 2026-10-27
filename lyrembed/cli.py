@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -117,6 +118,17 @@ def print_aliases() -> None:
         print("  " + " = ".join(group))
 
 
+# After an update, the new lyrembed takes over the old one's page: its port
+# and token come in this variable ("PORT:TOKEN"), which nothing else sees
+# (it is removed at once, so a cdimport started from the page does not get it).
+RESTART_ENV = "LYREMBED_RESTART"
+
+
+def _take_restart() -> tuple[int, str] | None:
+    port, _, token = os.environ.pop(RESTART_ENV, "").partition(":")
+    return (int(port), token) if port.isdigit() and token else None
+
+
 def _serve_web(path: Path, cache: MetadataCache, open_browser: bool, explicit: bool = True,
                back: tuple[str, str] | None = None) -> int:
     """Open the page on *path*; a folder that cannot be used is no reason not
@@ -133,7 +145,31 @@ def _serve_web(path: Path, cache: MetadataCache, open_browser: bool, explicit: b
                              cache, message)
     if back is not None:
         session.return_url, session.return_name = back
-    return web.serve(session, open_browser=open_browser)
+    restart = _take_restart()
+    if restart:
+        code = web.serve(session, open_browser=False, port=restart[0], token=restart[1])
+    else:
+        code = web.serve(session, open_browser=open_browser)
+    if session.restart_to:
+        _restart(*session.restart_to)
+    return code
+
+
+def _restart(port: int, token: str) -> None:
+    """Start the lyrembed just installed in this process's place, on the
+    same address: the page reloads once it answers again."""
+    from . import selfupdate
+
+    argv = selfupdate.restart_argv()
+    ui.info("Starting the new lyrembed...")
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.environ[RESTART_ENV] = f"{port}:{token}"
+    try:
+        os.execvp(argv[0], argv)
+    except OSError as exc:
+        os.environ.pop(RESTART_ENV, None)
+        ui.error(f"Could not start the new lyrembed ({exc}); start it again yourself.")
 
 
 def _desktop_entry(install: bool) -> int:

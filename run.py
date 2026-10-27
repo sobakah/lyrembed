@@ -20,7 +20,8 @@ except ModuleNotFoundError as exc:
 
     # The package's own files; kept in step with lyrembed/ (a test checks it).
     modules = ["__init__.py", "__main__.py", "batch.py", "cli.py", "config.py", "core.py",
-               "desktop.py", "providers.py", "tagging.py", "text.py", "ui.py", "web.py"]
+               "desktop.py", "providers.py", "selfupdate.py", "tagging.py", "text.py", "ui.py",
+               "web.py"]
     data = ["aliases.json", "static"]
     loose = [name for name in modules + data if (HERE / name).exists()]
 

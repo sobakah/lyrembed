@@ -26,7 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import config, core, providers, tagging, text, ui
+from . import config, core, providers, selfupdate, tagging, text, ui
 from .providers import Candidate, CachedSearch, SearchReport
 from .tagging import MetadataCache, TaggingError, TrackMeta
 
@@ -314,6 +314,7 @@ SETTING_GROUPS = [
     ]),
     ("Cleaning titles and artists", [("cleaning", key) for key in config.DEFAULT_CONFIG["cleaning"]]),
     ("Terminal output", [("settings", "color")]),
+    ("Updates", [("settings", "check_for_updates")]),
 ]
 # Derived from the version; a saved copy would freeze it.
 _HIDDEN_SETTINGS = {("api", "user_agent")}
@@ -368,6 +369,11 @@ class WebSession:
         # Cover per (path, mtime): its id (a digest, so equal covers are
         # recognised) and where it is; None when the track has none.
         self._covers: dict[tuple[Path, float], dict | None] = {}
+        # A newer lyrembed; once it is installed, the page may ask for a
+        # restart, and serve() then says where the new process should listen.
+        self.updates = Updates()
+        self.restart_requested = False
+        self.restart_to: tuple[int, str] | None = None
 
     def close(self) -> None:
         """Let a bulk run finish its track, then remove the listening copies."""
@@ -778,6 +784,17 @@ class WebSession:
             self.job.stop.set()
         return self.job_view(0)
 
+    # a newer lyrembed
+    def request_restart(self) -> dict:
+        """Start the newly installed lyrembed in this one's place. Not while a
+        bulk run goes on: closing would stop it after its current track."""
+        if self.updates.view()["state"] != "installed":
+            raise ApiError(409, "No new lyrembed is installed yet.")
+        if self.job is not None and self.job.running:
+            raise ApiError(409, "A bulk run is still going; restart lyrembed when it is done.")
+        self.restart_requested = True
+        return {"ok": True}
+
     # settings
     @staticmethod
     def settings() -> dict:
@@ -841,6 +858,79 @@ class WebSession:
     def inspect(lyrics: str) -> dict:
         """What the editor shows while typing: synced or plain, and the script."""
         return {"synced": text.has_timestamps(lyrics), "script": text.script_label(lyrics) if lyrics.strip() else ""}
+
+
+# --- a newer lyrembed --------------------------------------------------------
+def update_state_file() -> Path:
+    return selfupdate.state_dir() / "update-check.json"
+
+
+class Updates:
+    """The check for a newer lyrembed and the update, for the page (as picktag
+    does it). git and pipx take seconds to minutes, so both run in a thread
+    and the page asks for the state (/api/update) meanwhile.
+
+    States: idle, checking, current, failed (the check), available,
+    installing, installed, install-failed. quiet marks the check at the
+    start: the page then mentions only a newer version.
+    """
+
+    def __init__(self) -> None:
+        self.lock = threading.Lock()
+        self._view: dict = {"state": "idle", "current": config.__version__}
+        self._how: selfupdate.Install | None = None
+
+    def view(self) -> dict:
+        with self.lock:
+            return dict(self._view)
+
+    def _set(self, **view) -> None:
+        with self.lock:
+            self._view = {"current": config.__version__, **view}
+
+    def check(self, quiet: bool = False) -> dict:
+        with self.lock:
+            if self._view["state"] in ("checking", "installing", "installed"):
+                return dict(self._view)
+            self._view = {"state": "checking", "current": config.__version__, "quiet": quiet}
+        threading.Thread(target=self._check, args=(quiet,), name="lyrembed-update-check", daemon=True).start()
+        return self.view()
+
+    def _check(self, quiet: bool) -> None:
+        try:
+            found = selfupdate.latest()
+        except selfupdate.UpdateError as exc:
+            self._set(state="failed", quiet=quiet, message=str(exc))
+            return
+        if problem := selfupdate.mark_checked(update_state_file()):
+            log.warning("could not remember the update check: %s", problem)
+        if not selfupdate.newer(found):
+            self._set(state="current", quiet=quiet)
+            return
+        how = selfupdate.how_installed(found)
+        self._how = how
+        self._set(state="available", quiet=quiet, version=found, command=how.command,
+                  canInstall=how.argv is not None, notes=f"{selfupdate.RELEASES}/tag/{found}")
+
+    def install(self) -> dict:
+        with self.lock:
+            view, how = self._view, self._how
+            if view["state"] not in ("available", "install-failed") or how is None or not how.argv:
+                raise ApiError(409, "There is no update lyrembed can install.")
+            # A second try forgets the first one's failure.
+            view = {k: v for k, v in view.items() if k not in ("message", "code", "log")}
+            self._view = {**view, "state": "installing"}
+        log_file = selfupdate.state_dir() / "update.log"
+
+        def run() -> None:
+            code, tail = selfupdate.install(how.argv, log_file)
+            if code == 0:
+                self._set(**{**view, "state": "installed"})
+            else:
+                self._set(**{**view, "state": "install-failed", "message": tail or f"pipx ended with code {code}",
+                             "code": code, "log": str(log_file)})
+        threading.Thread(target=run, name="lyrembed-update", daemon=True).start()
+        return self.view()
 
 
 # --- HTTP --------------------------------------------------------------------
@@ -986,7 +1076,8 @@ class _Handler(BaseHTTPRequestHandler):
             # program while the answer is still being written.
             if url.path == "/api/closing":
                 self.server.closing_at = time.monotonic()
-            elif url.path == "/api/quit":
+            elif url.path == "/api/quit" or (url.path == "/api/update/restart"
+                                              and self.server.session.restart_requested):
                 self.wfile.flush()
                 self.server.stop.set()
         except ApiError as exc:
@@ -1105,7 +1196,18 @@ class _Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/romanize":
             return session.romanize(str(body.get("lyrics", "")), str(body.get("key", "")),
                                     str(body.get("hanDefault", "zh")), bool(body.get("keepOriginal")))
-        if method == "POST" and path in ("/api/ping", "/api/closing", "/api/quit"):
+        if method == "GET" and path == "/api/update":
+            return session.updates.view()
+        if method == "POST" and path == "/api/update/check":
+            return session.updates.check()
+        if method == "POST" and path == "/api/update/install":
+            return session.updates.install()
+        if method == "POST" and path == "/api/update/restart":
+            return session.request_restart()
+        if method == "POST" and path == "/api/ping":
+            # The page learns about a newer lyrembed found meanwhile.
+            return {"ok": True, "update": session.updates.view()}
+        if method == "POST" and path in ("/api/closing", "/api/quit"):
             return {"ok": True}
         match = _TRACK_ROUTE.match(path)
         if match:
@@ -1124,10 +1226,24 @@ class _Handler(BaseHTTPRequestHandler):
         raise ApiError(404, "Not found.")
 
 
-def serve(session: WebSession, open_browser: bool = True, port: int = 0) -> int:
-    """Run the page until it is quit or closed; returns the exit code."""
-    token = secrets.token_urlsafe(24)
-    server = _Server(session, token, port)
+def serve(session: WebSession, open_browser: bool = True, port: int = 0, token: str = "") -> int:
+    """Run the page until it is quit or closed; returns the exit code.
+
+    port and token come from the lyrembed this one replaced after an update
+    (cli.RESTART_ENV): the same address and cookie, so its open tab only
+    needs to reload. When the port is taken meanwhile, a new one is printed.
+    """
+    restarted = bool(token)
+    token = token or secrets.token_urlsafe(24)
+    try:
+        server = _Server(session, token, port)
+    except OSError as exc:
+        if not restarted:
+            raise
+        ui.warn(f"The page's port {port} is no longer free ({exc.strerror or exc}); it has a new address.")
+        token = secrets.token_urlsafe(24)
+        server = _Server(session, token, 0)
+        open_browser = True
     url = f"http://127.0.0.1:{server.port}/?token={token}"
     # Where cdimport's page sends the tab back; the cookie is already set.
     session.page_url = f"http://127.0.0.1:{server.port}/"
@@ -1140,15 +1256,22 @@ def serve(session: WebSession, open_browser: bool = True, port: int = 0) -> int:
         if session.return_url:
             ui.info(f"Its Done button ends lyrembed and goes back to {session.return_name or 'the previous page'}.")
         else:
-            if not opened:
+            if restarted and not open_browser:
+                ui.info("The page that was open reloads by itself.")
+            elif not opened:
                 ui.info("Open that address in your browser.")
             ui.info("Quit on the page, or press Ctrl+C here.")
         # Whoever started lyrembed may be reading the address from a pipe.
         sys.stdout.flush()
+        if (config.get("settings", "check_for_updates", True) and not session.return_url
+                and selfupdate.due(update_state_file())):
+            session.updates.check(quiet=True)
         while not server.stop.wait(1.0):
             if server.page_gone() and not session.import_away():
                 ui.info("The page was closed - stopping.")
                 break
+        if session.restart_requested:
+            session.restart_to = (server.port, token)
         if session.job is not None and session.job.running:
             ui.info("Finishing the current track of the bulk run...")
     finally:

@@ -12,6 +12,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from lyrembed import config, providers, tagging, text  # noqa: E402
 from lyrembed import batch, core, ui  # noqa: E402
 from lyrembed.core import natural_key  # noqa: E402
+from lyrembed import selfupdate  # noqa: E402
+
+REAL_LATEST = selfupdate.latest  # before no_update_check replaces it
+
+
+@pytest.fixture(autouse=True)
+def no_update_check(monkeypatch, tmp_path):
+    """The check for a newer lyrembed asks GitHub and keeps a state file:
+    neither for real in tests, unless a test fakes the answer itself."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+
+    def offline(timeout=30):
+        raise selfupdate.UpdateError("no network in tests")
+    monkeypatch.setattr(selfupdate, "latest", offline)
 
 
 # --- config merging ----------------------------------------------------------
@@ -2850,3 +2864,130 @@ def test_the_launcher_names_the_package_files_there_are():
     listed = set(re.findall(r'"([^"]+\.py)"', re.search(r"modules = \[(.*?)\]", source, re.S).group(1)))
     package = Path(__file__).resolve().parent.parent / "lyrembed"
     assert listed == {p.name for p in package.glob("*.py")}
+
+
+# --- a newer lyrembed ----------------------------------------------------------
+def _fake_ls_remote(monkeypatch, stdout="", code=0, stderr=""):
+    asked = []
+
+    def run(cmd, **kwargs):
+        asked.append((cmd, kwargs))
+        return subprocess.CompletedProcess(cmd, code, stdout, stderr)
+    monkeypatch.setattr(selfupdate.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setattr(selfupdate.subprocess, "run", run)
+    return asked
+
+
+def test_update_check_takes_the_newest_release_tag(monkeypatch):
+    refs = "".join(f"abc\trefs/tags/{tag}\n" for tag in ("0.9.0", "1.0.0", "1.10.0", "1.2.0", "2.0.0-rc1", "v3.0.0"))
+    asked = _fake_ls_remote(monkeypatch, refs)
+    assert REAL_LATEST() == "1.10.0"
+    cmd, kwargs = asked[0]
+    assert cmd[-1] == selfupdate.REPO and kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+    _fake_ls_remote(monkeypatch, code=128, stderr="fatal: Repository not found.\n")
+    with pytest.raises(selfupdate.UpdateError, match="^Repository not found"):
+        REAL_LATEST()
+
+
+def _pipx_venv(tmp_path, url):
+    venv = tmp_path / ("venv" + str(len(list(tmp_path.glob("venv*")))))
+    venv.mkdir()
+    (venv / "pipx_metadata.json").write_text(json.dumps({
+        "main_package": {"package": "lyrembed", "package_or_url": url, "pip_args": []}, "venv_args": []}))
+    return venv
+
+
+def test_update_keeps_the_extras_and_a_pinned_release(tmp_path):
+    how = selfupdate.how_installed("1.1.0", _pipx_venv(tmp_path, "lyrembed[all] @ git+https://github.com/sobakah/lyrembed.git"))
+    assert how.command == "pipx upgrade lyrembed"
+    how = selfupdate.how_installed("1.1.0", _pipx_venv(tmp_path, "lyrembed[all] @ git+https://github.com/sobakah/lyrembed.git@1.0.0"))
+    assert how.argv[1:] == ["install", "--force", "lyrembed[all] @ git+https://github.com/sobakah/lyrembed.git@1.1.0"]
+    top = tmp_path / "checkout"
+    (top / ".git").mkdir(parents=True)
+    how = selfupdate.how_installed("1.1.0", tmp_path / "none", top / "lyrembed")
+    assert how.kind == "checkout" and how.argv is None
+
+
+def test_update_runs_pipx_and_keeps_its_output(tmp_path):
+    log = tmp_path / "state" / "update.log"
+    code, tail = selfupdate.install(["sh", "-c", "echo one; echo two >&2; exit 3"], log)
+    assert code == 3 and "one" in tail and "two" in tail and log.read_text().startswith("$ sh -c")
+    assert selfupdate.install(["/nonexistent/pipx"], log)[0] == 127
+
+
+def test_update_check_once_a_day(tmp_path):
+    state = tmp_path / "update-check.json"
+    assert selfupdate.due(state)
+    assert selfupdate.mark_checked(state, now=1000.0) is None
+    assert not selfupdate.due(state, now=1000.0 + 3600) and selfupdate.due(state, now=1000.0 + 25 * 3600)
+
+
+def _wait_for(updates, *states):
+    deadline = time.monotonic() + 5
+    while updates.view()["state"] not in states:
+        assert time.monotonic() < deadline, updates.view()
+        time.sleep(0.01)
+    return updates.view()
+
+
+def test_the_page_finds_installs_and_restarts_a_newer_lyrembed(cfg, tmp_path, monkeypatch):
+    monkeypatch.setattr(selfupdate, "latest", lambda timeout=30: "9.0.0")
+    monkeypatch.setattr(selfupdate, "how_installed", lambda version: selfupdate.Install(
+        "pipx", "pipx upgrade lyrembed", ["/usr/bin/pipx", "upgrade", "lyrembed"]))
+    runs = []
+    monkeypatch.setattr(selfupdate, "install", lambda argv, log: (runs.append(argv) or 1, "no network"))
+    session = web.WebSession(tmp_path, [], tagging.MetadataCache())
+    with pytest.raises(web.ApiError, match="no update"):
+        session.updates.install()
+    session.updates.check()
+    view = _wait_for(session.updates, "available")
+    assert view["version"] == "9.0.0" and view["canInstall"] and view["notes"].endswith("/tag/9.0.0")
+    assert not selfupdate.due(web.update_state_file())  # asked today
+    with pytest.raises(web.ApiError, match="No new lyrembed"):
+        session.request_restart()
+    session.updates.install()
+    view = _wait_for(session.updates, "install-failed")
+    assert view["message"] == "no network" and view["log"].endswith("update.log")
+    monkeypatch.setattr(selfupdate, "install", lambda argv, log: (runs.append(argv) or 0, ""))
+    session.updates.install()  # try again
+    _wait_for(session.updates, "installed")
+    assert runs == [["/usr/bin/pipx", "upgrade", "lyrembed"]] * 2
+    session.job = type("RunningJob", (), {"running": True})()
+    with pytest.raises(web.ApiError, match="bulk run"):
+        session.request_restart()
+    session.job = None
+    assert session.request_restart() == {"ok": True} and session.restart_requested
+
+
+def test_update_api_and_restart_stop_the_server(web_server, monkeypatch):
+    response, data = _http(web_server, "GET", "/api/update")
+    assert response.status == 200 and json.loads(data) == {"state": "idle", "current": config.__version__}
+    response, data = _http(web_server, "POST", "/api/ping", {})
+    assert json.loads(data)["update"]["state"] == "idle"
+    response, data = _http(web_server, "POST", "/api/update/restart", {})
+    assert response.status == 409 and not web_server.stop.is_set()
+    web_server.session.updates._set(state="installed", version="9.0.0")
+    response, _ = _http(web_server, "POST", "/api/update/restart", {})
+    assert response.status == 200 and web_server.stop.wait(2)
+
+
+def test_a_failed_check_is_reported_to_the_page(cfg, tmp_path):
+    session = web.WebSession(tmp_path, [], tagging.MetadataCache())
+    session.updates.check(quiet=True)
+    view = _wait_for(session.updates, "failed")
+    assert view["quiet"] and view["message"] == "no network in tests"
+    assert selfupdate.due(web.update_state_file())  # not answered: asked again next time
+
+
+def test_restart_hands_over_the_address(monkeypatch):
+    monkeypatch.setenv(cli.RESTART_ENV, "8123:abc")
+    assert cli._take_restart() == (8123, "abc") and cli.RESTART_ENV not in os.environ
+    assert cli._take_restart() is None
+    monkeypatch.setenv(cli.RESTART_ENV, "nonsense")
+    assert cli._take_restart() is None
+    started = []
+    monkeypatch.setattr(cli.os, "execvp", lambda file, argv: started.append((argv, os.environ[cli.RESTART_ENV])))
+    monkeypatch.setattr(selfupdate, "restart_argv", lambda: ["/home/u/.local/bin/lyrembed", "~/Music/Album"])
+    cli._restart(8123, "abc")
+    assert started == [(["/home/u/.local/bin/lyrembed", "~/Music/Album"], "8123:abc")]
+    monkeypatch.delenv(cli.RESTART_ENV)

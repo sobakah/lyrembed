@@ -23,6 +23,7 @@ lyrembed/
   tagging.py             Metadata and cover reading, writing, mtime-keyed cache
   text.py                Tag cleaning, artist matching, script handling, romanization
   ui.py                  Terminal colours, messages and the status line
+  selfupdate.py          A newer lyrembed: release tags via git, the pipx command, the restart
   config.py              Defaults, setting explanations, config merging, alias loading
   desktop.py             The app-menu entry (freedesktop.org), written on request
   aliases.json           Built-in artist alias groups (package data)
@@ -34,7 +35,7 @@ tests/lrc.test.mjs         Node tests for static/lrc.js (run by the pytest suite
 
 ```bash
 pip install -e ".[all,dev]"     # all optional backends plus pytest/pyflakes
-pytest -q                       # 198 tests; 23 skip without the optional backends,
+pytest -q                       # 206 tests; 23 skip without the optional backends,
                                 # 2 more without ffmpeg or node
 python -m pyflakes lyrembed/ tests/ run.py
 python run.py --version
@@ -241,6 +242,28 @@ ended, so the page asks again while `importing` is true. While cdimport
 runs, and `IMPORT_GRACE` after, lyrembed's own page does not count as
 gone (`import_away`). Not offered when lyrembed itself was opened with
 `--return-url`, so the two cannot call each other in a loop.
+
+**A newer lyrembed is found and installed from the page** (the maintainer's
+request, 2026-10-27, after picktag's `core/selfupdate.py`; cdimport has the
+same, copied, not imported). `selfupdate.latest` takes the highest plain
+`x.y.z` tag from `git ls-remote --tags` of the private repository: git has
+the access `pipx install` has (gh as credential helper) and never prompts
+(`GIT_TERMINAL_PROMPT=0`, no askpass). `serve` checks at most once a day
+(`~/.local/state/lyrembed/update-check.json`, written only when GitHub
+answered), never in batch mode or with `--return-url`. `web.Updates` runs the
+check and `pipx upgrade` (or `pipx install --force` with the new tag for a
+pinned install) in threads; the page asks `/api/update`, and the ping's
+answer carries the state. pipx replaces the package's files, `static/`
+included, under the running server, so the page offers **Restart
+lyrembed** at once: `/api/update/restart` stops the server after its answer,
+and `cli._restart` `exec`s the start command with `LYREMBED_RESTART=PORT:TOKEN`
+in the environment. The new process takes that variable out at once (a
+cdimport started from its page must not see it) and listens on the same port
+with the same token, so the tab's cookie still fits and the page only
+reloads once `/api/update` answers with the new version. A taken port gets a
+new address and a browser tab. Not while a bulk run goes on. Checked
+2026-10-27 in headless Chrome with a faked release: notice, Update, Restart,
+reload on the same address, then Settings' **Check for updates**.
 
 **The token cookie's name carries the port** (`web.cookie_name`). Cookies
 belong to a host, not a port: a second lyrembed on 127.0.0.1 (cdimport's

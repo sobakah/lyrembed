@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [1.0.0] — 2026-10-26
+## [1.0.0] — 2026-10-27
 
 The first stable release. lyrembed finds synchronized and plain lyrics for
 an album (LRCLIB, NetEase, QQ Music, Megalobiz), checks that they belong
@@ -13,7 +13,18 @@ your browser, served by lyrembed on this computer: the track list with
 covers, search results next to a preview, an editor that plays the track,
 bulk actions, settings and artist aliases. `--auto` tags a whole folder in
 the terminal without asking, also from cron. With cdimport installed, a
-CD can be imported from the page.
+CD can be imported from the page. From now on the page tells you about new
+versions and installs them.
+
+### Added
+
+* **Updates:** the page looks for a newer lyrembed when it starts (at most
+  once a day; setting `check_for_updates`) and with **Check for updates**
+  in Settings. Installed with pipx, **Update** installs it and **Restart
+  lyrembed** starts the new version on the same address, so the open tab
+  just reloads; otherwise the page shows the command. The check uses git,
+  with the same access to the repository as `pipx install`. Batch mode and
+  a lyrembed opened by cdimport never look.
 
 ### Fixed
 

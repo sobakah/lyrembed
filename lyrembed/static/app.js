@@ -118,7 +118,8 @@ function App() {
     api('/jobs/current').then((r) => { if (r.job && r.job.running) { setJob(r.job); setView({ name: 'bulk' }); } }).catch(() => {});
     // The server stops when the page is gone: it hears nothing for a while,
     // or the page says it is closing and does not come back (a reload does).
-    const ping = setInterval(() => api('/ping', {}).catch(() => {}), 15000);
+    const ping = setInterval(() => api('/ping', {}).then((r) => { if (r.update) setUpdate(r.update); }).catch(() => {}), 15000);
+    api('/update').then(setUpdate).catch(() => {});
     const closing = () => navigator.sendBeacon('/api/closing', '');
     const unsaved = (event) => { if (dirty.current) event.preventDefault(); };
     addEventListener('pagehide', closing);
@@ -211,6 +212,56 @@ function App() {
     notify(`Opened ${lib.name}: ${lib.tracks.length} tracks.`, 'info');
   };
 
+  // A newer lyrembed (/api/update): looked for at the start (once a day) or
+  // from Settings, installed with pipx, then lyrembed starts again on the same
+  // address and this page reloads.
+  const [update, setUpdate] = useState(null);
+  const [restarting, setRestarting] = useState('');
+  const [hiddenUpdate, setHiddenUpdate] = useState(() => {
+    try { return sessionStorage.getItem('lyrembed-hidden-update') || ''; } catch { return ''; }
+  });
+  const lastUpdate = useRef(null);
+  useEffect(() => {
+    const before = lastUpdate.current;
+    lastUpdate.current = update;
+    // Checking or installing: ask again until it is done.
+    if (update && ['checking', 'installing'].includes(update.state)) {
+      const timer = setTimeout(() => api('/update').then(setUpdate).catch(() => {}), 1500);
+      return () => clearTimeout(timer);
+    }
+    // A check asked for in Settings always answers; the one at the start
+    // only mentions a newer version.
+    if (!update || !before || before.state !== 'checking' || update.quiet) return;
+    if (update.state === 'current') notify(`lyrembed ${update.current} is the newest version.`, 'info');
+    if (update.state === 'failed') notify(`Couldn't look for a newer lyrembed: ${update.message}`, 'error');
+  }, [update]);
+  const checkUpdates = () => api('/update/check', {}).then((u) => { setHiddenUpdate(''); setUpdate(u); })
+    .catch((err) => notify(err.message, 'error'));
+  const installUpdate = () => api('/update/install', {}).then(setUpdate).catch((err) => notify(err.message, 'error'));
+  const hideUpdate = () => {
+    setHiddenUpdate(update.version);
+    try { sessionStorage.setItem('lyrembed-hidden-update', update.version); } catch { /* only for this tab anyway */ }
+  };
+  const restart = async () => {
+    if (!leaveOk()) return;
+    try {
+      await api('/update/restart', {});
+    } catch (err) {
+      notify(err.message, 'error');
+      return;
+    }
+    setRestarting('waiting');
+    // The new lyrembed answers on this address with the same cookie; until
+    // the old one has stopped, it is still the old one answering.
+    const wanted = update.version;
+    const started = Date.now();
+    const wait = () => fetch('/api/update')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(r.statusText))))
+      .then((u) => { if (u.current === wanted) location.reload(); else throw new Error('still the old one'); })
+      .catch(() => { if (Date.now() - started < 60000) setTimeout(wait, 1000); else setRestarting('lost'); });
+    setTimeout(wait, 1000);
+  };
+
   const [importing, setImporting] = useState(false);
   // cdimport opens its own page; its Done leads back here with the album.
   const importCd = async () => {
@@ -257,7 +308,7 @@ function App() {
     body = html`<${BulkView} library=${library} job=${job} onJob=${setJob} notify=${notify}
       onOpen=${(index) => go({ name: 'track', index })} />`;
   } else if (view.name === 'settings') {
-    body = html`<${SettingsView} notify=${notify} />`;
+    body = html`<${SettingsView} notify=${notify} update=${update} onCheckUpdates=${checkUpdates} />`;
   } else if (library && view.name === 'edit') {
     body = html`<${Editor} key=${'edit' + view.index} track=${library.tracks[view.index]} initial=${view.text}
       source=${view.source} versions=${view.versions} chosen=${view.chosen} dirty=${dirty}
@@ -291,6 +342,9 @@ function App() {
     </header>
     <main class=${preview ? 'with-player' : ''}>
       ${loadError && html`<p class="note note-error">${loadError}</p>`}
+      ${(restarting || (update && update.version && update.version !== hiddenUpdate)) && html`<${UpdateNote}
+        update=${update} restarting=${restarting} jobRunning=${!!(job && job.running)}
+        onInstall=${installUpdate} onRestart=${restart} onHide=${hideUpdate} />`}
       ${library && library.returnUrl && view.name === 'library' && html`<p class="note note-info" style=${{ marginBottom: '20px' }}>
         ${library.returnName} opened this album here. When you're done, <b>Done – back to ${library.returnName}</b> takes you back.</p>`}
       ${body}
@@ -312,6 +366,47 @@ function App() {
       <p class="muted">You can close this tab. Start lyrembed again to continue.</p>
     </div></div>`}
   `;
+}
+
+// --- a newer lyrembed -------------------------------------------------------------
+function UpdateNote({ update, restarting, jobRunning, onInstall, onRestart, onHide }) {
+  const style = { marginBottom: '20px' };
+  if (restarting === 'waiting') {
+    return html`<p class="note note-info" style=${style}>Starting lyrembed ${update.version}… this page reloads once it answers.</p>`;
+  }
+  if (restarting === 'lost') {
+    return html`<p class="note note-error" style=${style}>The new lyrembed did not answer on this address. Start lyrembed
+      again (in a terminal or from the app menu); it opens a new page.</p>`;
+  }
+  const v = update.version;
+  const notes = html`<a href=${update.notes} target="_blank" rel="noopener noreferrer">What's new <${Icon} name="link" size=${13} /></a>`;
+  if (update.state === 'installing') {
+    return html`<p class="note note-info" style=${style}>Updating to lyrembed ${v}: pipx downloads and installs it, which takes
+      a minute or two. You can go on working meanwhile.</p>`;
+  }
+  if (update.state === 'installed') {
+    return html`<div class="note note-success stack-tight" style=${style}>
+      <span><b>lyrembed ${v} is installed.</b> Until it restarts, this page runs ${update.current}.</span>
+      <div class="row-wrap"><button class="btn btn-small btn-primary" disabled=${jobRunning} onClick=${onRestart}>Restart lyrembed</button>
+        ${jobRunning && html`<span class="small">After the bulk run.</span>`}</div></div>`;
+  }
+  if (update.state === 'install-failed') {
+    return html`<div class="note note-error stack-tight" style=${style}>
+      <span><b>The update to lyrembed ${v} didn't work</b> (pipx ended with code ${update.code}). Everything pipx said is in
+        <span class="mono">${update.log}</span>. To try it in a terminal: <span class="mono">${update.command}</span></span>
+      <pre class="mono small" style=${{ whiteSpace: 'pre-wrap', margin: 0 }}>${update.message}</pre>
+      <div class="row-wrap"><button class="btn btn-small" onClick=${onInstall}>Try again</button>
+        <button class="btn btn-small" onClick=${onHide}>Not now</button></div></div>`;
+  }
+  if (update.state !== 'available') return null;
+  return html`<div class="note note-info stack-tight" style=${style}>
+    <span><b>lyrembed ${v} is available</b> (this is ${update.current}). ${notes}</span>
+    ${update.canInstall
+      ? html`<span class="small">Update runs <span class="mono">${update.command}</span>, then lyrembed starts again.</span>`
+      : html`<span class="small">Update it with <span class="mono">${update.command}</span> in a terminal, then start lyrembed again.</span>`}
+    <div class="row-wrap">
+      ${update.canInstall && html`<button class="btn btn-small btn-primary" onClick=${onInstall}>Update</button>`}
+      <button class="btn btn-small" onClick=${onHide}>Not now</button></div></div>`;
 }
 
 // --- folders --------------------------------------------------------------------
@@ -916,7 +1011,7 @@ function fieldValue(setting, raw) {
   return raw;
 }
 
-function SettingsView({ notify }) {
+function SettingsView({ notify, update, onCheckUpdates }) {
   const [data, setData] = useState(null);
   const [edits, setEdits] = useState({});
   const [error, setError] = useState('');
@@ -987,6 +1082,9 @@ function SettingsView({ notify }) {
     <div class="stack-tight">
       <h1>Settings</h1>
       <span class="muted">Saved to <span class="mono">${data.path}</span>. Options given on the command line (such as --sidecar) still apply to this run.</span>
+      <div class="row-wrap"><span class="muted">This is lyrembed ${update ? update.current : ''}.</span>
+        <button class="btn btn-small" disabled=${!!(update && ['checking', 'installing'].includes(update.state))}
+          onClick=${onCheckUpdates}>${update && update.state === 'checking' && !update.quiet ? 'Looking…' : 'Check for updates'}</button></div>
     </div>
     ${data.groups.map((g, i) => (i < 2
       ? html`<section class="card pad stack" key=${g.name}><h2>${g.name}</h2>${g.settings.map(field)}</section>`
