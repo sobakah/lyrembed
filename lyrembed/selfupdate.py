@@ -19,7 +19,6 @@ import shlex
 import shutil
 import subprocess
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -28,7 +27,6 @@ from .config import __version__
 NAME = "lyrembed"
 REPO = "https://github.com/sobakah/lyrembed.git"
 RELEASES = "https://github.com/sobakah/lyrembed/releases"
-CHECK_EVERY_SECONDS = 24 * 3600
 _TAG = re.compile(r"refs/tags/(\d+)\.(\d+)\.(\d+)$")
 
 
@@ -114,29 +112,8 @@ def how_installed(version: str, prefix: str | Path | None = None,
     return Install("other", f"pipx install --force git+{REPO}@{version}")
 
 
-def due(state_file: Path, now: float | None = None) -> bool:
-    """At most one check a day: state_file holds when the last one answered."""
-    try:
-        last = json.loads(state_file.read_text(encoding="utf-8")).get("checked")
-    except (OSError, ValueError, AttributeError):
-        last = None
-    now = time.time() if now is None else now
-    return not isinstance(last, (int, float)) or not 0 <= now - last < CHECK_EVERY_SECONDS
-
-
-def mark_checked(state_file: Path, now: float | None = None) -> str | None:
-    """Remember the check; the reason when that fails (it is asked again then)."""
-    try:
-        state_file.parent.mkdir(parents=True, exist_ok=True)
-        state_file.write_text(json.dumps({"checked": time.time() if now is None else now}) + "\n",
-                              encoding="utf-8")
-    except OSError as exc:
-        return str(exc)
-    return None
-
-
 def state_dir() -> Path:
-    """Where the last check and the update's output are kept."""
+    """Where the update's output is kept."""
     base = os.environ.get("XDG_STATE_HOME")
     return (Path(base) if base else Path.home() / ".local" / "state") / NAME
 

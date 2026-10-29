@@ -248,9 +248,9 @@ request, 2026-10-27, after picktag's `core/selfupdate.py`; cdimport has the
 same, copied, not imported). `selfupdate.latest` takes the highest plain
 `x.y.z` tag from `git ls-remote --tags` of the private repository: git has
 the access `pipx install` has (gh as credential helper) and never prompts
-(`GIT_TERMINAL_PROMPT=0`, no askpass). `serve` checks at most once a day
-(`~/.local/state/lyrembed/update-check.json`, written only when GitHub
-answered), never in batch mode or with `--return-url`. `web.Updates` runs the
+(`GIT_TERMINAL_PROMPT=0`, no askpass). `serve` checks at every start
+(`web.wants_update_check`; the maintainer's request 2026-10-29, it was once a
+day), in a thread, never in batch mode or with `--return-url`. `web.Updates` runs the
 check and `pipx upgrade` (or `pipx install --force` with the new tag for a
 pinned install) in threads; the page asks `/api/update`, and the ping's
 answer carries the state. pipx replaces the package's files, `static/`

@@ -165,8 +165,8 @@ SETTING_HELP: dict[str, Any] = {
         ),
         "color": "Colours in the terminal output (batch mode, messages): \"auto\", \"always\" or \"never\".",
         "check_for_updates": (
-            "Look for a newer lyrembed when the page starts, at most once a day (asks GitHub through "
-            "git), and offer to update it with pipx. Settings has a button to look right away. "
+            "Look for a newer lyrembed every time the page starts, in the background (asks GitHub "
+            "through git), and offer to update it with pipx. Settings has a button to look right away. "
             "Batch mode never looks."
         ),
     },

@@ -212,7 +212,7 @@ function App() {
     notify(`Opened ${lib.name}: ${lib.tracks.length} tracks.`, 'info');
   };
 
-  // A newer lyrembed (/api/update): looked for at the start (once a day) or
+  // A newer lyrembed (/api/update): looked for at every start or
   // from Settings, installed with pipx, then lyrembed starts again on the same
   // address and this page reloads.
   const [update, setUpdate] = useState(null);

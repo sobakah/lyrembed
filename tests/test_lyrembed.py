@@ -2915,11 +2915,17 @@ def test_update_runs_pipx_and_keeps_its_output(tmp_path):
     assert selfupdate.install(["/nonexistent/pipx"], log)[0] == 127
 
 
-def test_update_check_once_a_day(tmp_path):
-    state = tmp_path / "update-check.json"
-    assert selfupdate.due(state)
-    assert selfupdate.mark_checked(state, now=1000.0) is None
-    assert not selfupdate.due(state, now=1000.0 + 3600) and selfupdate.due(state, now=1000.0 + 25 * 3600)
+def test_the_page_looks_for_updates_at_every_start(cfg, tmp_path, monkeypatch):
+    """Not once a day: a release made a minute ago shows at the next start
+    (the check runs in a thread, so the start doesn't wait for it)."""
+    monkeypatch.setattr(selfupdate, "latest", lambda timeout=30: config.__version__)
+    session = web.WebSession(tmp_path, [], tagging.MetadataCache())
+    assert web.wants_update_check(session)
+    session.updates.check(quiet=True)
+    _wait_for(session.updates, "current")
+    assert web.wants_update_check(web.WebSession(tmp_path, [], tagging.MetadataCache()))   # again at once
+    session.return_url = "http://127.0.0.1:9/"            # opened by cdimport: it doesn't look
+    assert not web.wants_update_check(session)
 
 
 def _wait_for(updates, *states):
@@ -2942,7 +2948,6 @@ def test_the_page_finds_installs_and_restarts_a_newer_lyrembed(cfg, tmp_path, mo
     session.updates.check()
     view = _wait_for(session.updates, "available")
     assert view["version"] == "9.0.0" and view["canInstall"] and view["notes"].endswith("/tag/9.0.0")
-    assert not selfupdate.due(web.update_state_file())  # asked today
     with pytest.raises(web.ApiError, match="No new lyrembed"):
         session.request_restart()
     session.updates.install()
@@ -2976,7 +2981,6 @@ def test_a_failed_check_is_reported_to_the_page(cfg, tmp_path):
     session.updates.check(quiet=True)
     view = _wait_for(session.updates, "failed")
     assert view["quiet"] and view["message"] == "no network in tests"
-    assert selfupdate.due(web.update_state_file())  # not answered: asked again next time
 
 
 def test_restart_hands_over_the_address(monkeypatch):

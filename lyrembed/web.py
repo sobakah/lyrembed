@@ -861,8 +861,10 @@ class WebSession:
 
 
 # --- a newer lyrembed --------------------------------------------------------
-def update_state_file() -> Path:
-    return selfupdate.state_dir() / "update-check.json"
+def wants_update_check(session) -> bool:
+    """Whether the page looks for a newer lyrembed: at every start (in a thread,
+    so the start doesn't wait), unless switched off or opened by cdimport."""
+    return bool(config.get("settings", "check_for_updates", True)) and not session.return_url
 
 
 class Updates:
@@ -902,8 +904,6 @@ class Updates:
         except selfupdate.UpdateError as exc:
             self._set(state="failed", quiet=quiet, message=str(exc))
             return
-        if problem := selfupdate.mark_checked(update_state_file()):
-            log.warning("could not remember the update check: %s", problem)
         if not selfupdate.newer(found):
             self._set(state="current", quiet=quiet)
             return
@@ -1263,8 +1263,7 @@ def serve(session: WebSession, open_browser: bool = True, port: int = 0, token: 
             ui.info("Quit on the page, or press Ctrl+C here.")
         # Whoever started lyrembed may be reading the address from a pipe.
         sys.stdout.flush()
-        if (config.get("settings", "check_for_updates", True) and not session.return_url
-                and selfupdate.due(update_state_file())):
+        if wants_update_check(session):
             session.updates.check(quiet=True)
         while not server.stop.wait(1.0):
             if server.page_gone() and not session.import_away():

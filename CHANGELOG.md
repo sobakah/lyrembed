@@ -3,6 +3,12 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **lyrembed looks for a newer version every time the page starts**, in the background, instead of once a day, so a new release shows at the next start.
+
 ## [1.0.0] — 2026-10-27
 
 The first stable release. lyrembed finds synchronized and plain lyrics for
