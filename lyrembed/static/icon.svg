@@ -1,33 +1,33 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
   <defs>
-    <linearGradient id="note" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#62a0ea"/>
-      <stop offset="1" stop-color="#1a5fb4"/>
-    </linearGradient>
+    <linearGradient id="note" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#62a0ea"/><stop offset="1" stop-color="#1a5fb4"/></linearGradient>
   </defs>
-  <!-- the lyrics sheet -->
-  <rect x="20" y="14" width="92" height="106" rx="11" fill="#1c71d8" opacity="0.35"/>
-  <rect x="16" y="8" width="92" height="106" rx="11" fill="#ffffff"/>
-  <path d="M26 28h72M26 38h72M26 48h72M26 58h72M26 68h72" fill="none" stroke="#c0bfbc" stroke-width="2.5"/>
-  <g stroke-linecap="round" stroke-width="6">
-    <path d="M30 86h24M62 86h12M82 86h12" stroke="#99c1f1"/>
-    <path d="M30 100h16M54 100h28" stroke="#c0bfbc"/>
+  <!-- the lyrics, as a speech bubble -->
+  <path d="M24 14 H72 Q86 14 86 28 V50 Q86 64 72 64 H62 L66 76 L50 64 H24 Q10 64 10 50 V28 Q10 14 24 14 Z" fill="#1c71d8" opacity="0.35" transform="translate(2 4)"/>
+  <path d="M24 14 H72 Q86 14 86 28 V50 Q86 64 72 64 H62 L66 76 L50 64 H24 Q10 64 10 50 V28 Q10 14 24 14 Z" fill="#ffffff"/>
+  <g stroke-linecap="round" stroke-width="6" fill="none">
+    <path d="M24 30 H48" stroke="#3584e4"/><path d="M56 30 H72" stroke="#c0bfbc"/>
+    <path d="M24 42 H40 M48 42 H66" stroke="#c0bfbc"/>
+    <path d="M24 54 H46" stroke="#deddda"/>
   </g>
-  <!-- the notes -->
-  <g transform="translate(3 -3)">
-    <g fill="#1a5fb4" opacity="0.35" transform="translate(3 4)">
-      <path d="M44 29L88 20V30L44 39Z"/>
-      <rect x="44" y="30" width="6" height="42"/>
-      <rect x="82" y="22" width="6" height="42"/>
-      <ellipse cx="39.5" cy="72" rx="11" ry="8.5" transform="rotate(-20 39.5 72)"/>
-      <ellipse cx="77.5" cy="64" rx="11" ry="8.5" transform="rotate(-20 77.5 64)"/>
-    </g>
+  <!-- words on their way -->
+  <g stroke-linecap="round" stroke-width="5">
+    <path d="M70 84 L80 82" stroke="#99c1f1"/>
+    <path d="M50 92 L62 89" stroke="#62a0ea"/>
+    <path d="M60 104 L68 102" stroke="#99c1f1"/>
+  </g>
+  <!-- the music file they go into -->
+  <g transform="translate(76 50) rotate(8) scale(0.8)">
+    <path d="M4 6 H40 L60 26 V74 Q60 80 54 80 H10 Q4 80 4 74 Z" fill="#1c71d8" opacity="0.35"/>
+    <path d="M0 6 Q0 0 6 0 H38 L58 20 V68 Q58 74 52 74 H6 Q0 74 0 68 Z" fill="#ffffff"/>
+    <path d="M38 0 V14 Q38 20 44 20 H58 Z" fill="#c0bfbc"/>
     <g fill="url(#note)">
-      <path d="M44 29L88 20V30L44 39Z"/>
-      <rect x="44" y="30" width="6" height="42"/>
-      <rect x="82" y="22" width="6" height="42"/>
-      <ellipse cx="39.5" cy="72" rx="11" ry="8.5" transform="rotate(-20 39.5 72)"/>
-      <ellipse cx="77.5" cy="64" rx="11" ry="8.5" transform="rotate(-20 77.5 64)"/>
+      <path d="M22 30 L44 25 V31 L22 36 Z"/>
+      <rect x="22" y="31" width="5" height="25"/><rect x="39" y="27" width="5" height="25"/>
+      <ellipse cx="18.5" cy="56" rx="7.5" ry="6" transform="rotate(-20 18.5 56)"/>
+      <ellipse cx="35.5" cy="52" rx="7.5" ry="6" transform="rotate(-20 35.5 52)"/>
     </g>
   </g>
+  <path d="M106 12 Q107.8 21.2 117 23 Q107.8 24.8 106 34 Q104.2 24.8 95 23 Q104.2 21.2 106 12 Z" fill="#f6d32d"/>
+  <path d="M20 94 Q21.2 100.8 28 102 Q21.2 103.2 20 110 Q18.8 103.2 12 102 Q18.8 100.8 20 94 Z" fill="#f6d32d"/>
 </svg>
