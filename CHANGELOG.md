@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.0.1] — 2026-10-30
 
 ### Changed
 
@@ -716,6 +716,7 @@ LRCLIB, NetEase and `syncedlyrics`; confidence-aware ranking; batch mode with
   time. Traditional Chinese resolves less often than simplified for this
   reason.
 
+[1.0.1]: https://github.com/sobakah/lyrembed/releases/tag/1.0.1
 [1.0.0]: https://github.com/sobakah/lyrembed/releases/tag/1.0.0
 [0.9.0]: https://github.com/sobakah/lyrembed/releases/tag/0.9.0
 [0.8.0]: https://github.com/sobakah/lyrembed/releases/tag/0.8.0
