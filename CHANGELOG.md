@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.1.0] — 2026-10-31
 
 ### Changed
 
@@ -13,6 +13,16 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- **Japanese songs are no longer romanized as Chinese.** A line of Kanji alone (`約束`) made a Japanese song count as mixed, so such lines came out in Pinyin, without asking in batch mode and bulk runs. They are now read as Japanese when the song has Kana and nothing proves Chinese.
+- **Batch mode is pickier about titles and artists.** Titles of symbols alone (`???`) no longer match every song, one word no longer matches a much longer title (`Stay` and `Stay With Me`), and a result without an artist is no longer embedded unattended. The page still lists them.
+- Batch mode waits out a provider's rate limit even when another provider found the lyrics.
+- An album imported with cdimport is no longer missed when cdimport ends at the wrong moment.
+- A credit naming several artists searches the aliases of each of them, without more requests than one artist's.
+- A slow search no longer keeps lyrembed from ending after Quit or Ctrl+C.
+- Converting Apple Lossless for listening no longer holds up the rest of the page.
+- A cover file that was changed, added or removed shows without restarting lyrembed.
+- Restarting after an update finds lyrembed on Windows.
+- No error messages in the terminal when the browser leaves in the middle of an answer.
 - Settings opens when no folder is open; it showed the folder picker instead.
 - No sideways scrolling at phone width.
 
@@ -729,6 +739,7 @@ LRCLIB, NetEase and `syncedlyrics`; confidence-aware ranking; batch mode with
   time. Traditional Chinese resolves less often than simplified for this
   reason.
 
+[1.1.0]: https://github.com/sobakah/lyrembed/releases/tag/1.1.0
 [1.0.1]: https://github.com/sobakah/lyrembed/releases/tag/1.0.1
 [1.0.0]: https://github.com/sobakah/lyrembed/releases/tag/1.0.0
 [0.9.0]: https://github.com/sobakah/lyrembed/releases/tag/0.9.0

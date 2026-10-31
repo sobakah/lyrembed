@@ -391,6 +391,8 @@ def batch(files: list[Path], base_dir: Path, cache: MetadataCache, overwrite: bo
     delay = max(0.0, float(config.get("api", "batch_delay_seconds", 1.0)))
     searched = False
     limit_pause = 0.0
+    # Providers still refusing after a track that another provider settled.
+    limited: list[str] = []
 
     for index, path in enumerate(files, 1):
         meta = cache.get(path)
@@ -417,7 +419,10 @@ def batch(files: list[Path], base_dir: Path, cache: MetadataCache, overwrite: bo
 
         # LRCLIB is a free community service: pace the requests rather than
         # sending a burst for every track of a large library.
-        if searched and delay:
+        if limited:
+            yield Pause(prefix, limit_pause, limited)
+            limited = []
+        elif searched and delay:
             yield Pause(prefix, delay)
         searched = True
 
@@ -432,6 +437,11 @@ def batch(files: list[Path], base_dir: Path, cache: MetadataCache, overwrite: bo
             report, candidate = find_automatic(meta)
         if not report.rate_limited:
             limit_pause = 0.0
+        elif candidate is not None:
+            # Found elsewhere, but LRCLIB's quick lookup comes first again on
+            # the next track, and each request prolongs the limit.
+            limit_pause = min(max(limit_pause * 2, 10.0, *report.rate_limited.values()), 120.0)
+            limited = list(report.rate_limited)
 
         if candidate is None and report.instrumental:
             yield outcome("skipped", f"instrumental according to {report.instrumental_summary()}, skipped.")

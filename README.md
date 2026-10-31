@@ -2,7 +2,7 @@
 
 Vibecoded tool for Linux, macOS and Windows to search, check, romanize and embed synchronized (`.lrc`) and plain lyrics into FLAC, MP3, OGG Vorbis, Opus and M4A files, with a focus on East Asian music. You work on a page in your browser that only your own computer can reach; batch mode runs in the terminal.
 
-Version 1.0.1 · Python 3.10+ · MIT
+Version 1.1.0 · Python 3.10+ · MIT
 
 Formerly called **lrckit**; see the [changelog](CHANGELOG.md) for moving an existing setup. Version 0.8.0 replaced the terminal menus with the browser page.
 

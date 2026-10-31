@@ -2995,3 +2995,204 @@ def test_restart_hands_over_the_address(monkeypatch):
     cli._restart(8123, "abc")
     assert started == [(["/home/u/.local/bin/lyrembed", "~/Music/Album"], "8123:abc")]
     monkeypatch.delenv(cli.RESTART_ENV)
+
+
+# --- review of 2026-10-31 ----------------------------------------------------
+import types  # noqa: E402
+from pathlib import PureWindowsPath  # noqa: E402
+
+
+def _flac_with_tags(path: Path, **tags) -> Path:
+    from mutagen.flac import FLAC
+
+    audio = FLAC(_make_flac(path))
+    audio.update(tags)
+    audio.save()
+    return path
+
+
+def test_kanji_only_lines_do_not_make_a_japanese_song_mixed():
+    song = "[00:01.00]君を探している\n[00:05.00]約束\n[00:09.00]東京物語"
+    assert text.detect_script(song) == "ja"
+    assert text.missing_packages(song) == ([] if text.HAS_KAKASI else ["pykakasi"])
+    # Still Chinese without Kana, and still mixed with proof of Chinese.
+    assert text.detect_script("約束\n未来") == "zh"
+    assert text.detect_script("君を探している\n我爱你中国") == "mixed"
+
+
+@pytest.mark.skipif(not text.HAS_KAKASI, reason="pykakasi not installed")
+def test_kanji_only_lines_of_a_japanese_song_are_romanized_as_japanese():
+    result, reason = core.auto_romanize("[00:01.00]君を探している\n[00:05.00]約束")
+    assert reason == "" and "yakusoku" in result and "yuē" not in result
+
+
+def test_a_title_of_symbols_does_not_match_every_title():
+    assert not text.matches_title("???", "Anything At All")
+    assert not text.matches_title("♥", "Hello")
+    assert text.matches_title("???", " ??? ")
+    assert text.matches_title("", "Unknown Song")                               # unknown still counts
+
+
+def test_one_word_of_a_longer_title_is_another_song():
+    assert not text.matches_title("Stay", "Stay With Me")
+    assert not text.matches_title("Love", "I Don't Love You")
+    assert not text.matches_title("I Don't Love You", "Love")
+    assert text.matches_title("Hello", "Hello (Live)")
+    assert text.matches_title("Paper Harbour", "Paper Harbour Remastered")
+
+
+def test_a_result_without_an_artist_is_not_embedded_unattended():
+    nameless = providers.Candidate("NETEASE", "", "Song", "", "[00:01.00]x", synced=True)
+    named = providers.Candidate("LRCLIB", "Band", "Song", "", "[00:01.00]x", synced=True)
+    report = providers.SearchReport()
+    report.candidates = [nameless]
+    assert providers.pick_automatic(report, 0) is None
+    report.candidates = [nameless, named]
+    assert providers.pick_automatic(report, 0) is named
+
+
+def test_a_credit_gets_the_aliases_of_each_artist_it_names():
+    aliases = text.get_artist_aliases("IU, BTS")
+    solo_iu, solo_bts = text.get_artist_aliases("IU"), text.get_artist_aliases("BTS")
+    assert set(aliases) & set(solo_iu) and set(aliases) & set(solo_bts)
+    # About as many searches as one artist's: each alias is a request. The
+    # credit may search a name alone, but a solo artist's own name is no alias.
+    assert len(aliases) <= max(len(solo_iu), len(solo_bts)) + 1
+    assert "IU" not in solo_iu
+
+
+def test_a_rate_limit_is_waited_out_after_a_match_from_another_provider(cfg, tmp_path, monkeypatch):
+    tracks = [_flac_with_tags(tmp_path / f"{n}.flac", title=f"Song {n}", artist="Band") for n in (1, 2, 3)]
+    limited = providers.SearchReport()
+    limited.rate_limited = {"LRCLIB": 30.0}
+    limited.candidates = [providers.Candidate("NETEASE", "Band", "Song", "", "[00:01.00]x", synced=True)]
+    free = providers.SearchReport()
+    free.candidates = limited.candidates
+    answers = iter([(limited, limited.candidates[0]), (free, free.candidates[0]), (free, free.candidates[0])])
+    monkeypatch.setattr(core, "find_automatic", lambda meta: next(answers))
+    pauses = [s for s in core.batch(tracks, tmp_path, tagging.MetadataCache(), overwrite=False, dry_run=True,
+                                    backup_root=None) if isinstance(s, core.Pause)]
+    assert [(p.seconds, p.limited) for p in pauses] == [(30.0, ["LRCLIB"]), (cfg["api"]["batch_delay_seconds"], [])]
+
+
+def test_an_import_counts_as_running_until_its_output_is_read(cfg, tmp_path):
+    script = tmp_path / "ends_at_once.py"
+    script.write_text("print('cdimport finished: /album', flush=True)\n", encoding="utf-8")
+    release = threading.Event()
+
+    class LateReader(web.Import):
+        def _read(self):
+            release.wait(5)
+            super()._read()
+
+    run = LateReader([sys.executable, str(script)])
+    run.process.wait(5)
+    assert run.running and run.album is None                                    # the page keeps asking
+    release.set()
+    deadline = time.monotonic() + 5
+    while run.running:
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    assert run.album == Path("/album")
+
+
+def test_a_conversion_for_listening_holds_up_nothing_else(cfg, tmp_path, monkeypatch):
+    track = _make_flac(tmp_path / "a.m4a")
+    session = web.WebSession(tmp_path, [_make_flac(tmp_path / "b.flac")], tagging.MetadataCache())
+    session.files = [track]
+    monkeypatch.setattr(web, "_is_alac", lambda path: True)
+    monkeypatch.setattr(web.shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    started, finish = threading.Event(), threading.Event()
+    calls = []
+
+    def convert(command, **kwargs):
+        calls.append(command)
+        started.set()
+        assert finish.wait(5)
+        Path(command[-1]).write_bytes(b"fLaC")
+
+    monkeypatch.setattr(web.subprocess, "run", convert)
+    copies = []
+    threads = [threading.Thread(target=lambda: copies.append(session.audio(0)[0])) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    assert started.wait(5)
+    answered = threading.Event()
+
+    def other_request():
+        with session.lock:
+            answered.set()
+
+    threading.Thread(target=other_request, daemon=True).start()
+    assert answered.wait(2)                                                     # the page goes on
+    finish.set()
+    for thread in threads:
+        thread.join(5)
+    assert len(calls) == 1 and copies[0] == copies[1]                           # converted once
+    session.close()
+
+
+def test_a_changed_cover_file_shows_without_a_changed_track(cfg, tmp_path):
+    track = _make_flac(tmp_path / "a.flac")
+    session = web.WebSession(tmp_path, [track], tagging.MetadataCache())
+    assert session._cover(track) is None
+    cover = tmp_path / "cover.png"
+    cover.write_bytes(b"\x89PNG\r\n\x1a\n" + b"first")
+    first = session._cover(track)
+    assert first is not None
+    stamp = cover.stat()
+    cover.write_bytes(b"\x89PNG\r\n\x1a\n" + b"second")
+    os.utime(cover, ns=(stamp.st_atime_ns, stamp.st_mtime_ns + 1_000_000))
+    assert session._cover(track)["id"] != first["id"]
+    cover.unlink()
+    assert session._cover(track) is None
+
+
+def test_a_page_that_went_away_mid_answer_is_no_error(web_server, monkeypatch, caplog):
+    def gone():
+        raise BrokenPipeError(32, "Broken pipe")
+
+    monkeypatch.setattr(web_server.session, "library", gone)
+    with pytest.raises(http.client.HTTPException):
+        _http(web_server, "GET", "/api/library")
+    assert "web request failed" not in caplog.text
+
+
+def test_an_import_opening_its_album_reads_the_tracks_once(cfg, tmp_path, monkeypatch):
+    album = tmp_path / "Album"
+    album.mkdir()
+    _make_flac(album / "01.flac")
+    session = web.WebSession(None, [], tagging.MetadataCache())
+    session.importing = types.SimpleNamespace(running=False, album=album)
+    answers = []
+    real = session._summary
+    monkeypatch.setattr(session, "_summary", lambda *a: (answers.append(a), real(*a))[1])
+    assert session.library()["imported"] == "Album"
+    assert len(answers) == 1
+
+
+def test_a_stuck_provider_does_not_keep_a_finished_lyrembed_alive(tmp_path):
+    # Python joins an executor's threads at exit; syncedlyrics has no timeout.
+    script = tmp_path / "stuck.py"
+    script.write_text(f"""
+import sys, time, types
+sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
+from lyrembed import config, providers
+config.CONFIG["api"]["syncedlyrics_timeout_seconds"] = 0.1
+config.CONFIG["api"]["enable_syncedlyrics"] = True
+providers.HAS_SYNCEDLYRICS = True
+providers.syncedlyrics = types.SimpleNamespace(search=lambda query, **kw: time.sleep(30))
+report = providers.SearchReport()
+providers.query_syncedlyrics("Song", "Band", report)
+print(report.errors)
+""", encoding="utf-8")
+    done = subprocess.run([sys.executable, str(script)], capture_output=True, text=True, timeout=10)
+    assert "Timeout" in done.stdout, done.stderr
+
+
+def test_restart_finds_the_launcher_as_windows_starts_it(monkeypatch):
+    # The launcher's sys.argv[0] has lost its .exe, so only which() finds the file.
+    monkeypatch.setattr(sys, "argv", [r"C:\pipx\venvs\lyrembed\Scripts\lyrembed", "--flag"])
+    monkeypatch.setattr(selfupdate.shutil, "which", lambda name: name + ".exe")
+    monkeypatch.setattr(selfupdate, "Path", PureWindowsPath)
+    assert selfupdate.restart_argv() == [r"C:\pipx\venvs\lyrembed\Scripts\lyrembed.exe", "--flag"]

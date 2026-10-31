@@ -36,7 +36,7 @@ tests/lrc.test.mjs         Node tests for static/lrc.js (run by the pytest suite
 
 ```bash
 pip install -e ".[all,dev]"     # all optional backends plus pytest/pyflakes
-pytest -q                       # 206 tests; 23 skip without the optional backends,
+pytest -q                       # 220 tests; 24 skip without the optional backends,
                                 # 2 more without ffmpeg or node
 python -m pyflakes lyrembed/ tests/ run.py
 python run.py --version
@@ -73,7 +73,10 @@ only in text without Kana: pykakasi lacks 17 of the JIS X 0208 kanji (`唸`,
 `萍`, `錺`, ...), and one of them made a Japanese song "mixed", so its other
 Han runs came out as Pinyin. On a line with Kana, a Han run separated from
 Kana by punctuation (`「夢」、そして`) counts as Japanese, as one separated by
-spaces does.
+spaces does. A line of shared characters alone (`約束`) says nothing by
+itself: `_asian_languages` lets the rest decide, Japanese when the text has
+Kana and no proof of Chinese. Read as Chinese, such a line made a Japanese
+song "mixed", and batch mode saved `yuē shù`.
 
 **Romanization works on script runs, never on whole lines.** Handing a full
 line to one backend destroys what another produced (tone marks are not ASCII
@@ -105,7 +108,11 @@ section. Use `config.get(section, key, default)`, which falls back to the
 built-in defaults. Merging is recursive and deep-copies; do not replace it with
 `dict.update`.
 
-**Results must fit the track; there is no fallback to everything.** NetEase
+**Results must fit the track; there is no fallback to everything.**
+`text.matches_title` wants the shorter title to cover at least half of the
+longer one (`Stay` is not `Stay With Me`) and compares titles of symbols alone
+(`???`) as written. Only a missing title counts as matching. A record without
+an artist is listed but never embedded unattended (`pick_automatic`). NetEase
 answers a search without good hits with popular songs, which used to fill the
 list whenever no artist matched. `providers.is_related` needs the artist and
 the title (or, for translated titles, the length); the rest goes to
@@ -130,7 +137,11 @@ lyrembed's requests. LRCLIB rate-limits per client (HTTP 429 via Cloudflare,
 seen 2026-10-15): 429 is not in the session's retry list, a refusal stops the
 track's queued LRCLIB queries and later rounds (`SearchReport.rate_limited`),
 at most `_LRCLIB_PARALLEL` requests run at once, and batch mode's full search
-reuses the quick `/get` result (`after_quick`) instead of asking again.
+reuses the quick `/get` result (`after_quick`) instead of asking again. A
+refusal is waited out even when another provider found the lyrics: the next
+track starts with LRCLIB again (`core.batch`, `limited`). A credit naming
+several artists gets each one's aliases in turn, no more than the longest
+group has (`get_artist_aliases`): every alias is a search.
 QQ Music follows NetEase's rules (filler for unknown songs, so `_fit` decides
 which lyrics to fetch). It has no instrumental flag: its lyrics are then the
 notice `此歌曲为没有填词的纯音乐，请您欣赏`. The syncedlyrics sources were all
@@ -140,6 +151,11 @@ in the second round: 30 requests a minute and 1,000 a day per IP. After a 429
 it is skipped until `Retry-After` passes (`_megalobiz_blocked_until`) and is
 never put into `rate_limited`, so a batch run does not wait for a daily limit.
 Its terms ask to link to the lyric's page: `Candidate.url`, shown on inspect.
+
+**Provider threads are daemons (`providers._DaemonPool`).** Python joins a
+ThreadPoolExecutor's threads at exit, so `shutdown(wait=False)` was no help:
+a request nobody waits for any more, above all syncedlyrics without a timeout
+of its own, kept a finished lyrembed alive and whoever started it waiting.
 
 **Provider results are merged across concurrent responses.** `/get` and
 `/search` often return the same LRCLIB record. Attributes derived from which
@@ -198,7 +214,8 @@ browser cannot seek. Chrome and Firefox refuse Apple Lossless in M4A
 (tested 2026-10-21), while AAC in M4A plays. `WebSession.audio` therefore
 converts ALAC once per file version to a temporary FLAC with ffmpeg, only for
 listening, and `close()` removes the copies. Without ffmpeg the page says why
-the track does not play.
+the track does not play. ffmpeg runs outside `self.lock`, or every other
+request waits for it; a lock per file keeps it to one conversion.
 
 **Covers are judged by their bytes.** `tagging.embedded_cover` prefers the
 front cover (picture type 3), and `tagging.cover_file` falls back to a
@@ -207,7 +224,9 @@ accepts JPEG, PNG, GIF and WebP by their magic bytes only: tags often name
 the wrong MIME type, and an SVG could carry script. The page gets a short
 digest per cover, so equal covers are recognised: one cover for every track
 is shown with the folder, otherwise each track shows its own. The cover's
-address carries `?v=<digest>`, so the browser may cache it.
+address carries `?v=<digest>`, so the browser may cache it. Embedded covers
+are cached by the track's date and cover files by their own, which change
+without the tracks.
 
 **Bulk runs from the page run in a thread; every step is recorded before
 stopping.** `web.Job` drives `core.batch`/`core.bulk`, and the page asks for
@@ -239,7 +258,9 @@ lyrembed` (found by `web.find_cdimport`, only if its `--help` has
 `--return-url`), sends the tab to the address cdimport prints, and reads
 cdimport's output to the end for "cdimport finished: <folder>", which it
 then opens (`_take_imported`). The tab comes back before cdimport has
-ended, so the page asks again while `importing` is true. While cdimport
+ended, so the page asks again while `importing` is true: that is until the
+output is read (`Import.running`), not until the process is gone, or the
+album in its last line is missed. While cdimport
 runs, and `IMPORT_GRACE` after, lyrembed's own page does not count as
 gone (`import_away`). Not offered when lyrembed itself was opened with
 `--return-url`, so the two cannot call each other in a loop.

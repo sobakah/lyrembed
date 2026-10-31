@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import itertools
 import json
 import logging
 import re
@@ -206,7 +207,9 @@ class Import:
 
     @property
     def running(self) -> bool:
-        return self.process.poll() is None
+        # Not the process: it can be gone while its last line, the album,
+        # still waits to be read, and the page stops asking once this is False.
+        return self.ended_at is None
 
 
 # --- bulk runs -----------------------------------------------------------------
@@ -354,6 +357,8 @@ class WebSession:
         self.problem = problem
         # FLAC copies of ALAC tracks, made for listening only: (path, mtime) -> copy.
         self._converted: dict[tuple[Path, float], Path] = {}
+        self._converting: dict[tuple[Path, float], threading.Lock] = {}
+        self._copy_numbers = itertools.count()
         self._temp: Path | None = None
         self.job: Job | None = None
         # Set when another program's page opened lyrembed (--return-url): its
@@ -366,9 +371,11 @@ class WebSession:
         self._cdimport: tuple[bool, str | None] = (False, None)
         self.importing: Import | None = None
         self.imported = ""
-        # Cover per (path, mtime): its id (a digest, so equal covers are
-        # recognised) and where it is; None when the track has none.
+        # Embedded cover per (path, mtime) and cover file per (path, mtime_ns):
+        # its id (a digest, so equal covers are recognised) and type; None
+        # when there is none. Apart, as a cover file changes without its tracks.
         self._covers: dict[tuple[Path, float], dict | None] = {}
+        self._file_covers: dict[tuple[Path, int], dict | None] = {}
         # A newer lyrembed; once it is installed, the page may ask for a
         # restart, and serve() then says where the new process should listen.
         self.updates = Updates()
@@ -392,23 +399,37 @@ class WebSession:
             raise ApiError(404, "There is no such track in this folder (anymore).")
         return self.cache.get(self.files[index])
 
-    def _cover_data(self, path: Path) -> tuple[bytes, Path | None] | None:
-        """The cover's bytes: embedded in the file, else an image file next to it."""
+    @staticmethod
+    def _embedded_cover(path: Path) -> bytes | None:
         try:
             data = tagging.embedded_cover(path)
         except TaggingError:
-            data = None
-        if data and tagging.image_type(data):
-            return data, None
-        found = tagging.cover_file(path.parent)
+            return None
+        return data if data and tagging.image_type(data) else None
+
+    @staticmethod
+    def _file_cover(found: Path) -> bytes | None:
         try:
-            if found is not None and found.stat().st_size <= MAX_COVER_FILE:
+            if found.stat().st_size <= MAX_COVER_FILE:
                 data = found.read_bytes()
                 if tagging.image_type(data):
-                    return data, found
+                    return data
         except OSError:
             pass
         return None
+
+    def _cover_data(self, path: Path) -> bytes | None:
+        """The cover's bytes: embedded in the file, else an image file next to it."""
+        data = self._embedded_cover(path)
+        if data is None and (found := tagging.cover_file(path.parent)) is not None:
+            data = self._file_cover(found)
+        return data
+
+    @staticmethod
+    def _cover_entry(data: bytes | None) -> dict | None:
+        if data is None:
+            return None
+        return {"id": hashlib.sha1(data).hexdigest()[:16], "type": tagging.image_type(data)}
 
     def _cover(self, path: Path) -> dict | None:
         try:
@@ -416,20 +437,27 @@ class WebSession:
         except OSError:
             return None
         if key not in self._covers:
-            found = self._cover_data(path)
-            self._covers[key] = None if found is None else {
-                "id": hashlib.sha1(found[0]).hexdigest()[:16],
-                "type": tagging.image_type(found[0]),
-            }
-        return self._covers[key]
+            self._covers[key] = self._cover_entry(self._embedded_cover(path))
+        if self._covers[key] is not None:
+            return self._covers[key]
+        found = tagging.cover_file(path.parent)
+        if found is None:
+            return None
+        try:
+            file_key = (found, found.stat().st_mtime_ns)
+        except OSError:
+            return None
+        if file_key not in self._file_covers:
+            self._file_covers[file_key] = self._cover_entry(self._file_cover(found))
+        return self._file_covers[file_key]
 
     def cover(self, index: int) -> tuple[bytes, str]:
         with self.lock:
             path = self._meta(index).path
-        found = self._cover_data(path)
-        if found is None:
+        data = self._cover_data(path)
+        if data is None:
             raise ApiError(404, "This track has no cover.")
-        return found[0], tagging.image_type(found[0])
+        return data, tagging.image_type(data)
 
     def _summary(self, index: int, meta: TrackMeta) -> dict:
         path = meta.path
@@ -486,6 +514,10 @@ class WebSession:
             }
 
     def open_folder(self, raw: str) -> dict:
+        self._enter_folder(raw)
+        return self.library()
+
+    def _enter_folder(self, raw: str) -> None:
         path = Path(raw.strip().strip("'\"")).expanduser()
         if not raw.strip():
             raise ApiError(400, "Enter a folder.")
@@ -499,7 +531,6 @@ class WebSession:
                 raise ApiError(409, "A bulk run is still going; stop it or wait for it to finish "
                                     "before opening another folder.")
             self.base_dir, self.files, self.problem = resolved, core.sort_files(files, self.cache), ""
-        return self.library()
 
     def folders(self, raw: str) -> dict:
         """Subfolders of *raw* for the folder picker: the browser can't hand out
@@ -581,18 +612,28 @@ class WebSession:
         key = (path, path.stat().st_mtime)
         with self.lock:
             copy = self._converted.get(key)
-            if copy is None or not copy.is_file():
+            if copy is not None and copy.is_file():
+                return copy, "audio/flac"
+            converting = self._converting.setdefault(key, threading.Lock())
+        # Outside self.lock, or the whole page waits for ffmpeg; a second
+        # request for this track waits here and takes the copy.
+        with converting:
+            with self.lock:
+                copy = self._converted.get(key)
+                if copy is not None and copy.is_file():
+                    return copy, "audio/flac"
                 if self._temp is None:
                     self._temp = Path(tempfile.mkdtemp(prefix="lyrembed-listen-"))
-                copy = self._temp / f"{len(self._converted)}.flac"
-                try:
-                    subprocess.run([ffmpeg, "-nostdin", "-v", "error", "-y", "-i", str(path),
-                                    "-map", "0:a:0", "-c:a", "flac", str(copy)],
-                                   check=True, capture_output=True, timeout=300)
-                except (OSError, subprocess.SubprocessError) as exc:
-                    detail = getattr(exc, "stderr", b"") or b""
-                    raise ApiError(500, f"Could not convert '{path.name}' for listening: "
-                                        f"{detail.decode(errors='replace').strip() or exc}") from exc
+                copy = self._temp / f"{next(self._copy_numbers)}.flac"
+            try:
+                subprocess.run([ffmpeg, "-nostdin", "-v", "error", "-y", "-i", str(path),
+                                "-map", "0:a:0", "-c:a", "flac", str(copy)],
+                               check=True, capture_output=True, timeout=300)
+            except (OSError, subprocess.SubprocessError) as exc:
+                detail = getattr(exc, "stderr", b"") or b""
+                raise ApiError(500, f"Could not convert '{path.name}' for listening: "
+                                    f"{detail.decode(errors='replace').strip() or exc}") from exc
+            with self.lock:
                 self._converted[key] = copy
         return copy, "audio/flac"
 
@@ -738,7 +779,7 @@ class WebSession:
             album, run.album = run.album, None
             if album.is_dir():
                 try:
-                    self.open_folder(str(album))
+                    self._enter_folder(str(album))
                     self.imported = album.name
                 except ApiError as exc:
                     log.warning("cannot open the imported album: %s", exc.message)
@@ -1080,6 +1121,8 @@ class _Handler(BaseHTTPRequestHandler):
                                               and self.server.session.restart_requested):
                 self.wfile.flush()
                 self.server.stop.set()
+        except (BrokenPipeError, ConnectionResetError):
+            return  # the page went away mid-answer (a closed tab, a reload)
         except ApiError as exc:
             if self.path.startswith("/api/"):
                 self._send_json(exc.status, {"error": exc.message})

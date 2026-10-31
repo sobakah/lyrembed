@@ -113,14 +113,21 @@ def _alias_groups():
 
 
 def get_artist_aliases(artist: str) -> list[str]:
-    """Return alternative spellings for *artist* (word-boundary matched)."""
+    """Return alternative spellings for *artist* (word-boundary matched).
+
+    A credit naming several artists gets each one's aliases in turn, but no
+    more of them than the longest group has: every alias is a search, and
+    NetEase answers a burst with filler.
+    """
     if not artist:
         return []
     artist_lower = artist.lower()
-    for group in _alias_groups():
-        if any(_contains_alias(artist_lower, alias) for alias in group):
-            return [a for a in group if a.lower() != artist_lower]
-    return []
+    groups = [[a for a in group if a.lower() != artist_lower] for group in _alias_groups()
+              if any(_contains_alias(artist_lower, alias) for alias in group)]
+    if not groups:
+        return []
+    turns = (group[i] for i in range(max(map(len, groups))) for group in groups if i < len(group))
+    return list(dict.fromkeys(turns))[:max(map(len, groups))]
 
 
 def matches_artist(target_artist: str, candidate_artist: str) -> bool:
@@ -202,9 +209,18 @@ def matches_title(target_title: str, candidate_title: str) -> bool:
     """
     target, candidate = _title_words(target_title), _title_words(candidate_title)
     if not target or not candidate:
-        return True
+        # A title of symbols alone ('???') has no words, but is not unknown.
+        written_t = (target_title or "").strip().casefold()
+        written_c = (candidate_title or "").strip().casefold()
+        return not written_t or not written_c or written_t == written_c
     joined_t, joined_c = " ".join(target), " ".join(candidate)
-    if joined_t == joined_c or _contains_alias(joined_t, joined_c) or _contains_alias(joined_c, joined_t):
+    if joined_t == joined_c:
+        return True
+    # One word of four is another song ('Stay', 'Stay With Me'); a title in
+    # another language still gets its chance through the duration.
+    if min(len(target), len(candidate)) * 2 < max(len(target), len(candidate)):
+        return False
+    if _contains_alias(joined_t, joined_c) or _contains_alias(joined_c, joined_t):
         return True
     overlap = set(target) & set(candidate)
     return len(overlap) / min(len(set(target)), len(set(candidate))) > 0.5
@@ -850,6 +866,7 @@ def _asian_languages(text: str) -> tuple[set[str], bool]:
     asian: set[str] = set()
     has_other = False
     trust_ja = contains_kana(text)
+    undecided = False
 
     for line in text.splitlines():
         if is_credit_line(line) or _LRC_META_REGEX.match(line):
@@ -865,10 +882,18 @@ def _asian_languages(text: str) -> tuple[set[str], bool]:
                 evidence = _han_evidence(fragment, trust_ja)
                 if evidence == "ja" and not trust_ja:
                     evidence = None
-                asian.add(evidence or ("ja" if line_has_kana else "zh"))
+                if evidence or line_has_kana:
+                    asian.add(evidence or "ja")
+                else:
+                    undecided = True
             elif kind == OTHER:
                 has_other = True
 
+    # A line of shared characters alone says nothing by itself; the rest of
+    # the lyrics decide. Read as Chinese, '約束' made a Japanese song "mixed"
+    # and its Kanji lines came out as Pinyin.
+    if undecided:
+        asian.add("ja" if trust_ja and "zh" not in asian else "zh")
     return asian, has_other
 
 

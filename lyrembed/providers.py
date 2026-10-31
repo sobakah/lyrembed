@@ -8,11 +8,12 @@ instead of the sum of up to thirty sequential requests.
 from __future__ import annotations
 
 import logging
+import queue
 import re
 import threading
 import time
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import Future, as_completed
 from concurrent.futures import TimeoutError as FutureTimeout
 from dataclasses import dataclass, field
 
@@ -96,6 +97,55 @@ def close_session() -> None:
         if _SESSION is not None:
             _SESSION.close()
             _SESSION = None
+
+
+class _DaemonPool:
+    """What lyrembed uses of ThreadPoolExecutor, on daemon threads. Python
+    joins an executor's threads when it exits, so a request nobody waits for
+    any more (syncedlyrics has no timeout of its own) kept a finished
+    lyrembed alive, and whoever started it waiting."""
+
+    def __init__(self, workers: int) -> None:
+        self._jobs: queue.SimpleQueue = queue.SimpleQueue()
+        self._threads = [threading.Thread(target=self._work, name="lyrembed-provider", daemon=True)
+                         for _ in range(workers)]
+        for thread in self._threads:
+            thread.start()
+
+    def _work(self) -> None:
+        while (job := self._jobs.get()) is not None:
+            future, call, args = job
+            if future.set_running_or_notify_cancel():
+                try:
+                    future.set_result(call(*args))
+                except BaseException as exc:
+                    future.set_exception(exc)
+
+    def submit(self, call, *args) -> Future:
+        future: Future = Future()
+        self._jobs.put((future, call, args))
+        return future
+
+    def shutdown(self, wait: bool = True, cancel_futures: bool = False) -> None:
+        if cancel_futures:
+            while True:
+                try:
+                    job = self._jobs.get_nowait()
+                except queue.Empty:
+                    break
+                job[0].cancel()
+                job[0].set_running_or_notify_cancel()
+        for _ in self._threads:
+            self._jobs.put(None)
+        if wait:
+            for thread in self._threads:
+                thread.join()
+
+    def __enter__(self) -> "_DaemonPool":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.shutdown()
 
 
 @dataclass
@@ -368,7 +418,7 @@ def query_lrclib(title: str, artist: str, album: str, duration: int, report: Sea
     items: list[tuple[str, dict]] = []
     seen_ids: dict = {}
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    with _DaemonPool(workers) as pool:
         futures = {pool.submit(fetch, job): job for job in queries}
         for future in as_completed(futures):
             try:
@@ -544,7 +594,7 @@ def query_netease(title: str, artist: str, duration: int, report: SearchReport,
 
     candidates = []
     workers = max(1, min(len(songs), int(config.get("api", "max_workers", 8))))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    with _DaemonPool(workers) as pool:
         for future in as_completed({pool.submit(fetch_lyric, song) for song in songs}):
             try:
                 song, lyric, romanized, pure = future.result()
@@ -709,7 +759,7 @@ def query_qqmusic(title: str, artist: str, duration: int, report: SearchReport,
 
     candidates = []
     workers = max(1, min(len(songs), int(config.get("api", "max_workers", 8))))
-    with ThreadPoolExecutor(max_workers=workers) as pool:
+    with _DaemonPool(workers) as pool:
         for future in as_completed({pool.submit(fetch_lyric, song) for song in songs}):
             try:
                 song, lyric = future.result()
@@ -915,7 +965,7 @@ def query_syncedlyrics(title: str, artist: str, report: SearchReport,
     # another, so the wait is capped here. The worker threads cannot be killed;
     # they finish in the background and their results are dropped.
     limit = float(config.get("api", "syncedlyrics_timeout_seconds", 15))
-    pool = ThreadPoolExecutor(max_workers=workers)
+    pool = _DaemonPool(workers)
     try:
         for future in as_completed({pool.submit(search, q) for q in queries}, timeout=limit):
             try:
@@ -1062,7 +1112,7 @@ def _gather(title: str, artist: str, album: str, duration: int, report: SearchRe
         return []
 
     collected: list[Candidate] = []
-    pool = ThreadPoolExecutor(max_workers=len(jobs))
+    pool = _DaemonPool(len(jobs))
     try:
         futures = {pool.submit(job): name for name, job in jobs.items()}
         for future in as_completed(futures):
@@ -1212,7 +1262,9 @@ def pick_automatic(report: SearchReport, duration: int) -> Candidate | None:
         return None
     tolerance = _tolerance()
     for candidate in report.candidates:
-        if not candidate.synced or not candidate.match_artist or candidate.unverified:
+        # A record without an artist "matches" any artist: fine to list, not
+        # to embed unseen.
+        if not candidate.synced or not candidate.match_artist or candidate.unverified or not candidate.artist:
             continue
         if not (candidate.match_title or candidate.exact):
             continue
