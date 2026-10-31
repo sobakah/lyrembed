@@ -3,6 +3,19 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Changed
+
+- **The page has a new look, shared with cdimport**, in libadwaita's design language: a header with lyrembed's workflow in the middle (Folder, Tracks, Lyrics, Edit, which you can click to go back), a centred column, softer buttons, grouped settings with switches, and floating messages. The two programs differ by colour and logo.
+- A small logo for the header and the browser tab, where the full icon can't be read. The full icon stays in the app menu and appears on the page's larger screens.
+- Icons on the action buttons. The list's **Open** buttons became arrows, and the folder's path moved under the album's name.
+
+### Fixed
+
+- Settings opens when no folder is open; it showed the folder picker instead.
+- No sideways scrolling at phone width.
+
 ## [1.0.1] — 2026-10-30
 
 ### Changed

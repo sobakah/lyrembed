@@ -1,6 +1,7 @@
 // lyrembed's page. Everything it shows comes from the local server's JSON API
 // (lyrembed/web.py), and every change to a file is a request to it.
 import { html, render, useState, useEffect, useRef, useCallback, useMemo } from '/static/vendor/preact-htm.js';
+import { Icon } from '/static/icons.js';
 import { parse, currentLines, applyShift, stampLine, formatStamp, playTime, nearestTime } from '/static/lrc.js';
 
 async function api(path, body, signal) {
@@ -32,6 +33,8 @@ const STATUS = {
   unreadable: ['Unreadable', 'ERROR'],
 };
 const SCRIPTS = { latin: 'LATIN', original: 'ORIG', mixed: 'MIXED' };
+// The way through a folder, in the header: view, name, icon.
+const FLOW = [['folder', 'Folder', 'folder'], ['library', 'Tracks', 'list'], ['track', 'Lyrics', 'lyrics'], ['edit', 'Edit', 'pencil']];
 
 function lengthLabel(c) {
   if (c.diff !== null) return c.diff ? `±${c.diff} s` : 'length OK';
@@ -46,20 +49,6 @@ function StatusBadge({ status, short }) {
 
 function ScriptBadge({ script }) {
   return script ? html`<span class="badge b-script" title=${script === 'mixed' ? 'Several Asian scripts: romanize with “Mixed scripts”' : ''}>${SCRIPTS[script]}</span>` : null;
-}
-
-function Icon({ name, size = 16 }) {
-  const paths = {
-    note: html`<path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle>`,
-    left: html`<path d="m15 18-6-6 6-6"></path>`,
-    right: html`<path d="m9 18 6-6-6-6"></path>`,
-    up: html`<path d="m18 15-6-6-6 6"></path>`,
-    folder: html`<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>`,
-    disc: html`<circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="2.5"></circle>`,
-    link: html`<path d="M15 3h6v6"></path><path d="M10 14 21 3"></path><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>`,
-  };
-  return html`<svg width=${size} height=${size} viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-    stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name]}</svg>`;
 }
 
 // The track's cover; ?v= changes with the cover, so the browser may keep it.
@@ -137,6 +126,9 @@ function App() {
     return true;
   };
   const go = (next) => { if (leaveOk()) { setPicker(false); setView(next); } };
+  // The Lyrics step leads back to the track last worked on.
+  const lastTrack = useRef(null);
+  if (view.index !== undefined) lastTrack.current = view.index;
 
   const updateTrack = (track) => setLibrary((lib) => ({
     ...lib, tracks: lib.tracks.map((t) => (t.index === track.index ? { ...t, ...track } : t)),
@@ -286,12 +278,14 @@ function App() {
   };
 
   let body = null;
-  if (picker || (library && !library.folder)) {
+  if (view.name === 'settings' && !picker) {
+    body = html`<${SettingsView} notify=${notify} update=${update} onCheckUpdates=${checkUpdates} />`;
+  } else if (picker || (library && !library.folder)) {
     body = html`<${FolderPicker} library=${library} onOpened=${opened}
       onCancel=${library && library.folder ? () => setPicker(false) : null} />`;
   } else if (library && view.name === 'library') {
     body = html`<${LibraryView} library=${library} onOpen=${(index) => go({ name: 'track', index })}
-      preview=${preview} onPlay=${playPreview} />`;
+      preview=${preview} onPlay=${playPreview} onChangeFolder=${() => { if (leaveOk()) setPicker(true); }} />`;
   } else if (library && view.name === 'track') {
     body = html`<${TrackView} key=${view.index} library=${library} index=${view.index} notify=${notify}
       preview=${preview} onPlay=${playPreview}
@@ -307,8 +301,6 @@ function App() {
   } else if (library && view.name === 'bulk') {
     body = html`<${BulkView} library=${library} job=${job} onJob=${setJob} notify=${notify}
       onOpen=${(index) => go({ name: 'track', index })} />`;
-  } else if (view.name === 'settings') {
-    body = html`<${SettingsView} notify=${notify} update=${update} onCheckUpdates=${checkUpdates} />`;
   } else if (library && view.name === 'edit') {
     body = html`<${Editor} key=${'edit' + view.index} track=${library.tracks[view.index]} initial=${view.text}
       source=${view.source} versions=${view.versions} chosen=${view.chosen} dirty=${dirty}
@@ -321,26 +313,45 @@ function App() {
       }} />`;
   }
 
+  const folderOpen = !!(library && library.folder);
+  const sidePage = !picker && ['bulk', 'settings'].includes(view.name);
+  const place = sidePage ? null : picker || !folderOpen ? 0 : FLOW.findIndex(([name]) => name === view.name);
+  const reached = place === null ? (folderOpen ? 2 : 0) : place;
+  const stepAction = {
+    folder: () => { if (leaveOk()) setPicker(true); },
+    library: folderOpen && (() => go({ name: 'library' })),
+    track: folderOpen && lastTrack.current !== null && (() => go({ name: 'track', index: lastTrack.current })),
+  };
+  const width = place === 0 || view.name === 'settings' ? 'narrow' : ['track', 'edit'].includes(view.name) ? 'wide' : '';
+
   return html`
     <header class="topbar">
-      <button class="brand" onClick=${() => go({ name: 'library' })} title="Back to the track list">
-        <${Icon} name="note" size=${24} /> lyrembed
-      </button>
-      <nav class="row-wrap" aria-label="Main">
-        ${[['library', 'Library'], ['bulk', 'Bulk actions'], ['settings', 'Settings']].map(([name, label]) => html`
-          <button class=${'nav' + ((view.name === name || (name === 'library' && ['track', 'edit'].includes(view.name))) && !picker ? ' nav-on' : '')}
-            disabled=${name !== 'settings' && !(library && library.folder)}
-            onClick=${() => go({ name })}>${label}${name === 'bulk' && job && job.running ? ' ●' : ''}</button>`)}
-      </nav>
-      <span class="path mono">${library ? library.folder : ''}</span>
-      <button class="btn btn-small" onClick=${() => { if (leaveOk()) setPicker(true); }}><${Icon} name="folder" /> Change folder…</button>
-      ${library && library.cdimport && html`<button class="btn btn-small" disabled=${importing} onClick=${importCd}>
-        <${Icon} name="disc" /> ${importing ? 'Starting cdimport…' : library.importing ? 'Back to the import' : 'Import a CD'}</button>`}
-      ${library && library.returnUrl
-        ? html`<button class="btn btn-small btn-primary" onClick=${quit}>Done – back to ${library.returnName}</button>`
-        : html`<button class="btn btn-small" onClick=${quit}>Quit</button>`}
+      <div><button class="brand" onClick=${() => go({ name: 'library' })} title="Back to the track list">
+        <img src="/static/logo.svg" alt="" width="28" height="28" /><span class="brand-name">lyrembed</span>
+      </button></div>
+      <ol class="steps" aria-label="Workflow">
+        ${FLOW.map(([name, label, icon], i) => {
+          const state = i === place ? 'now' : i < reached ? 'done' : '';
+          return html`<li class=${'step ' + state} key=${name}>
+            <button class="step-go" title=${label} disabled=${!stepAction[name] || i === place} aria-current=${i === place ? 'step' : null}
+              onClick=${stepAction[name]}><span class="dot"><${Icon} name=${state === 'done' ? 'check' : icon} size=${14} /></span>
+              <span class="step-name">${label}</span></button>
+          </li>`;
+        })}
+      </ol>
+      <div class="topbar-end">
+        ${library && library.cdimport && html`<button class="btn btn-flat" disabled=${importing} onClick=${importCd} title="Import a CD">
+          <${Icon} name="disc" /><span class="btn-text">${importing ? 'Starting cdimport…' : library.importing ? 'Back to the import' : 'Import a CD'}</span></button>`}
+        <button class=${'btn btn-flat' + (view.name === 'bulk' && !picker ? ' btn-on' : '')} disabled=${!folderOpen} title="Bulk actions"
+          onClick=${() => go({ name: 'bulk' })}><${Icon} name="layers" /><span class="btn-text">Bulk actions${job && job.running ? ' ●' : ''}</span></button>
+        <button class=${'btn btn-flat btn-icon' + (view.name === 'settings' && !picker ? ' btn-on' : '')} title="Settings" aria-label="Settings"
+          onClick=${() => go({ name: 'settings' })}><${Icon} name="settings" /></button>
+        ${library && library.returnUrl
+          ? html`<button class="btn btn-primary" onClick=${quit}><span class="btn-text">Done – back to ${library.returnName}</span></button>`
+          : html`<button class="btn btn-flat" onClick=${quit} title="Quit lyrembed"><${Icon} name="power" /><span class="btn-text">Quit</span></button>`}
+      </div>
     </header>
-    <main class=${preview ? 'with-player' : ''}>
+    <main class=${[width, preview ? 'with-player' : ''].filter(Boolean).join(' ')}>
       ${loadError && html`<p class="note note-error">${loadError}</p>`}
       ${(restarting || (update && update.version && update.version !== hiddenUpdate)) && html`<${UpdateNote}
         update=${update} restarting=${restarting} jobRunning=${!!(job && job.running)}
@@ -356,13 +367,14 @@ function App() {
       onFailed=${() => previewFailed(preview.index)}
       onClose=${() => { if (previewAudio.current) previewAudio.current.pause(); setPreview(null); }} />`}
     <div class=${'toasts' + (preview ? ' above-player' : '')} aria-live="polite">
-      ${toasts.map((t) => html`<div class=${'toast note-' + t.kind} key=${t.id}>
+      ${toasts.map((t) => html`<div class=${'toast toast-' + t.kind} key=${t.id}>
         <span>${t.message}</span>
         <button aria-label="Dismiss" onClick=${() => setToasts((list) => list.filter((x) => x.id !== t.id))}>×</button>
       </div>`)}
     </div>
-    ${stopped && html`<div class="overlay"><div class="card pad stack">
-      <h2>lyrembed has stopped</h2>
+    ${stopped && html`<div class="overlay"><div class="card status">
+      <img class="status-icon" src="/static/icon.svg" alt="" />
+      <h1>lyrembed has stopped</h1>
       <p class="muted">You can close this tab. Start lyrembed again to continue.</p>
     </div></div>`}
   `;
@@ -433,23 +445,25 @@ function FolderPicker({ library, onOpened, onCancel }) {
     }
   };
 
-  return html`<section class="card pad stack" style=${{ maxWidth: '900px' }}>
-    <div class="spread">
+  return html`<div class="stack">
+    <div class="status">
+      <img class="status-icon" src="/static/icon.svg" alt="" />
       <h1>Open a music folder</h1>
-      ${onCancel && html`<button class="btn" onClick=${onCancel}>Cancel</button>`}
     </div>
+    <section class="card pad stack">
     ${error && html`<p class="note note-warn" style=${{ whiteSpace: 'pre-line' }}>${error}</p>`}
     <form class="row-wrap" onSubmit=${(e) => { e.preventDefault(); load(path); }}>
       <label class="sr" for="folder-path">Folder</label>
       <input id="folder-path" type="text" class="mono" value=${path} onInput=${(e) => setPath(e.target.value)}
         style=${{ flex: '1 1 320px', minWidth: 0 }} />
-      <button class="btn" type="submit">Show</button>
-      <button class="btn btn-primary" type="button" disabled=${busy} onClick=${() => open(path)}>Open this folder</button>
+      <button class="btn" type="submit"><${Icon} name="search" /> Show</button>
+      <button class="btn btn-primary" type="button" disabled=${busy} onClick=${() => open(path)}><${Icon} name="folder" /> Open this folder</button>
+      ${onCancel && html`<button class="btn" type="button" onClick=${onCancel}>Cancel</button>`}
     </form>
     ${listing && html`<div class="stack-tight">
       <div class="row-wrap">
         <button class="btn btn-small" disabled=${!listing.parent} onClick=${() => load(listing.parent)}><${Icon} name="up" /> Up</button>
-        <button class="btn btn-small" onClick=${() => load(listing.home)}>Home</button>
+        <button class="btn btn-small" onClick=${() => load(listing.home)}><${Icon} name="home" /> Home</button>
         <span class="muted small">${listing.musicFiles
           ? `${listing.musicFiles} music file${listing.musicFiles === 1 ? '' : 's'} directly in this folder`
           : 'No music files directly in this folder'}</span>
@@ -462,11 +476,12 @@ function FolderPicker({ library, onOpened, onCancel }) {
       </div>
       <p class="muted small">Click a folder to look inside, double-click to open it. Subfolders such as CD 1 and CD 2 are included when you open their album.</p>
     </div>`}
-  </section>`;
+    </section>
+  </div>`;
 }
 
 // --- track list -------------------------------------------------------------------
-function LibraryView({ library, onOpen, preview, onPlay }) {
+function LibraryView({ library, onOpen, preview, onPlay, onChangeFolder }) {
   const tracks = library.tracks;
   const count = (status) => tracks.filter((t) => t.status === status).length;
   const first = tracks.find((t) => t.status === 'none' && !t.instrumental);
@@ -482,24 +497,26 @@ function LibraryView({ library, onOpen, preview, onPlay }) {
 
   return html`<div class="stack">
     <div class="spread">
-      <div class="row-wrap" style=${{ gap: '18px', alignItems: 'flex-end' }}>
-        ${library.cover && html`<${Cover} index=${0} id=${library.cover} size=${128} />`}
+      <div class="row-wrap grow" style=${{ gap: '18px', flexWrap: 'nowrap', flexBasis: '420px' }}>
+        ${library.cover && html`<${Cover} index=${0} id=${library.cover} size=${112} />`}
         <div class="stack-tight">
-          <span class="label">Folder</span>
           <h1>${library.name}</h1>
-          <span class="muted">${tracks.length} tracks</span>
-        </div>
-      </div>
-      <button class="btn btn-primary" disabled=${!first} onClick=${() => onOpen(first.index)}>
-        ${first ? 'Start with the first track without lyrics' : 'Every track has lyrics'}
-      </button>
-    </div>
-    <div class="row-wrap">
+          <span class="path mono">${library.folder}</span>
+          <div class="row-wrap">
       <span class="badge b-sync">${count('sync')} synced</span>
       <span class="badge b-plain">${count('plain')} plain</span>
       <span class="badge b-none">${count('none')} without lyrics</span>
       ${count('incomplete') > 0 && html`<span class="badge b-incomplete">${count('incomplete')} with incomplete tags</span>`}
       ${count('unreadable') > 0 && html`<span class="badge b-unreadable">${count('unreadable')} unreadable</span>`}
+          </div>
+        </div>
+      </div>
+      <div class="row-wrap">
+        <button class="btn" onClick=${onChangeFolder}><${Icon} name="folder" /> Change folder…</button>
+        <button class="btn btn-primary" disabled=${!first} onClick=${() => onOpen(first.index)}>
+          <${Icon} name=${first ? 'lyrics' : 'check'} /> ${first ? 'First track without lyrics' : 'Every track has lyrics'}
+        </button>
+      </div>
     </div>
     <div class="card table-box">
       <table>
@@ -520,7 +537,7 @@ function LibraryView({ library, onOpen, preview, onPlay }) {
               <tr class=${'track' + (preview && preview.index === t.index ? ' previewing' : '')} key=${t.index} onClick=${() => onOpen(t.index)}>
                 <td class="num mono">${t.index + 1}</td>
                 <td class="play-cell">
-                  <button class="btn btn-small btn-round" onClick=${(e) => { e.stopPropagation(); onPlay(t.index); }}
+                  <button class="btn btn-round" onClick=${(e) => { e.stopPropagation(); onPlay(t.index); }}
                     aria-label=${(playing ? 'Pause ' : 'Listen to ') + (t.title || t.file)}><${PlayIcon} playing=${playing} size=${14} /></button>
                 </td>
                 <td><div class="row-wrap" style=${{ flexWrap: 'nowrap' }}>
@@ -534,8 +551,9 @@ function LibraryView({ library, onOpen, preview, onPlay }) {
                   <${ScriptBadge} script=${t.script} />
                   ${t.instrumental && t.status === 'none' && html`<span class="badge b-instr">INSTRUMENTAL?</span>`}
                 </span></td>
-                <td style=${{ textAlign: 'right' }}>
-                  <button class="btn btn-small" onClick=${(e) => { e.stopPropagation(); onOpen(t.index); }}>Open</button>
+                <td class="open-cell">
+                  <button class="btn btn-flat btn-icon" aria-label=${'Open ' + (t.title || t.file)} title="Open"
+                    onClick=${(e) => { e.stopPropagation(); onOpen(t.index); }}><${Icon} name="right" /></button>
                 </td>
               </tr>`;
           })}
@@ -558,7 +576,7 @@ function MiniPlayer({ track, preview, audio, onPlay, onOpen, onChange, onFailed,
     <div class="grow stack-tight" style=${{ gap: '2px' }}>
       <button class="btn-link mini-title" onClick=${onOpen}>${track.title || track.file}</button>
       ${preview.error
-        ? html`<span class="small" style=${{ color: 'var(--plain-fg)' }}>${preview.error}</span>`
+        ? html`<span class="small" style=${{ color: 'var(--warn)' }}>${preview.error}</span>`
         : html`<span class="muted small">${track.artist}</span>`}
     </div>
     ${!preview.error && html`
@@ -567,7 +585,7 @@ function MiniPlayer({ track, preview, audio, onPlay, onOpen, onChange, onFailed,
       <input id="preview-seek" type="range" min="0" max=${preview.duration || 0} step="0.5" value=${preview.pos}
         onInput=${(e) => { if (audio.current) audio.current.currentTime = Number(e.target.value); }}
         style=${{ flex: '0 1 260px', minWidth: '100px' }} />`}
-    <button class="btn btn-small" onClick=${onClose} aria-label="Close the preview">×</button>
+    <button class="btn btn-flat btn-icon" onClick=${onClose} aria-label="Close the preview"><${Icon} name="x" /></button>
   </div>`;
 }
 
@@ -650,9 +668,9 @@ function TrackView({ library, index, notify, onOpen, onHome, onUpdated, onNext, 
           </div>
           <div class="lyrics-preview mono">${track.lyrics}</div>
           <div class="row-wrap">
-            <button class="btn btn-primary" onClick=${() => onEdit(track.lyrics, 'Embedded')}>Check and edit</button>
-            <button class="btn" disabled=${searching} onClick=${() => setSearching(true)}>Search for other versions</button>
-            <button class="btn btn-danger" onClick=${remove}>Delete lyrics…</button>
+            <button class="btn btn-primary" onClick=${() => onEdit(track.lyrics, 'Embedded')}><${Icon} name="pencil" /> Check and edit</button>
+            <button class="btn" disabled=${searching} onClick=${() => setSearching(true)}><${Icon} name="search" /> Search for other versions</button>
+            <button class="btn btn-danger" onClick=${remove}><${Icon} name="trash" /> Delete lyrics…</button>
           </div>
         </div>`}
         ${!track.error && (!track.lyrics || searching) && html`<${SearchPanel} key=${'s' + index} track=${track}
@@ -758,7 +776,7 @@ function SearchPanel({ track, onSave, onEdit, notify, romanize, onRomanize, belo
         ${result && !all.length && !busy && html`<p class="muted" style=${{ padding: '10px 14px' }}>No results match this track's title and artist.</p>`}
         ${all.map((c) => html`<button key=${c.number} class=${'list-row cand' + (c.number === selected ? ' selected' : '')}
           onClick=${() => setSelected(c.number)}>
-          <span class="mono muted" style=${{ width: '20px', paddingTop: '1px' }}>${c.number}</span>
+          <span class="key">${c.number}</span>
           <span class="body">
             <span class="row-wrap">
               <span class=${'badge p-' + c.provider}>${c.providerName}</span>
@@ -782,7 +800,7 @@ function SearchPanel({ track, onSave, onEdit, notify, romanize, onRomanize, belo
             <input id="q-title" type="text" placeholder="Title" value=${title} onInput=${(e) => setTitle(e.target.value)} style=${{ flex: '2 1 160px' }} />
             <label class="sr" for="q-artist">Artist</label>
             <input id="q-artist" type="text" placeholder="Artist" value=${artist} onInput=${(e) => setArtist(e.target.value)} />
-            <button class="btn" type="submit" disabled=${busy}>Search</button>
+            <button class="btn" type="submit" disabled=${busy}><${Icon} name="search" /> Search</button>
           </div>
           <div class="row-wrap">
             <button class="btn-link" type="button" disabled=${busy} onClick=${() => run({ ...query, refresh: true })}>Search again, without the cache</button>
@@ -810,9 +828,9 @@ function SearchPanel({ track, onSave, onEdit, notify, romanize, onRomanize, belo
               + ' (Settings: romanization layout).'}</span></span>
         </label>
         <div class="row-wrap">
-          <button class="btn btn-primary" disabled=${saving} onClick=${() => saveChosen(true)}>Save and go to the next track</button>
-          <button class="btn" disabled=${saving} onClick=${() => saveChosen(false)}>Save</button>
-          <button class="btn" onClick=${() => onEdit(chosen.text, chosen.providerName, all, chosen.number)}>Check and edit</button>
+          <button class="btn btn-primary" disabled=${saving} onClick=${() => saveChosen(true)}><${Icon} name="save" /> Save and go to the next track</button>
+          <button class="btn" disabled=${saving} onClick=${() => saveChosen(false)}><${Icon} name="save" /> Save</button>
+          <button class="btn" onClick=${() => onEdit(chosen.text, chosen.providerName, all, chosen.number)}><${Icon} name="pencil" /> Check and edit</button>
         </div>
       </div>`}
     </div>
@@ -886,7 +904,7 @@ function BulkView({ library, job, onJob, onOpen, notify }) {
 
   if (job) return html`<${JobView} job=${job} onOpen=${onOpen} onDone=${() => onJob(null)} />`;
 
-  return html`<div class="stack" style=${{ maxWidth: '980px' }}>
+  return html`<div class="stack">
     <div class="stack-tight">
       <span class="label">Bulk actions · ${library.name}</span>
       <h1>Run one action on many tracks</h1>
@@ -936,7 +954,7 @@ function BulkView({ library, job, onJob, onOpen, notify }) {
     </div>
     <div class="row-wrap">
       <button class="btn btn-primary" disabled=${!chosen.size || starting} onClick=${start}>
-        ${action === 'fetch' && dryRun ? 'Start the dry run' : 'Start'}</button>
+        <${Icon} name="layers" /> ${action === 'fetch' && dryRun ? 'Start the dry run' : 'Start'}</button>
     </div>
   </div>`;
 }
@@ -944,7 +962,7 @@ function BulkView({ library, job, onJob, onOpen, notify }) {
 function JobView({ job, onOpen, onDone }) {
   const percent = job.total ? Math.round((job.processed / job.total) * 100) : 0;
   const t = job.tally;
-  return html`<div class="stack" style=${{ maxWidth: '980px' }}>
+  return html`<div class="stack">
     <div class="stack-tight">
       <span class="label">Bulk actions${job.dryRun ? ' · dry run' : ''}</span>
       <h1>${job.label}</h1>
@@ -969,7 +987,7 @@ function JobView({ job, onOpen, onDone }) {
                 ? html`<button class="btn-link" onClick=${() => onOpen(row.index)}>${row.prefix}</button>`
                 : html`<span>${row.prefix}</span>`}
               <span class="muted"> ${row.message}</span>
-              ${(row.warnings || []).map((w) => html`<br /><span class="small" style=${{ color: 'var(--plain-fg)' }}>${w}</span>`)}
+              ${(row.warnings || []).map((w) => html`<br /><span class="small" style=${{ color: 'var(--warn)' }}>${w}</span>`)}
             </span>
           </div>`;
         })}
@@ -977,9 +995,9 @@ function JobView({ job, onOpen, onDone }) {
       ${!job.running && html`<div class="bar" style=${{ borderTop: '1px solid var(--border)', paddingTop: '14px' }}>
         <span class="grow">${job.dryRun ? 'Would save' : 'Done'}: <b>${t.done}</b> · Skipped: <b>${t.skipped}</b> · Failed: <b>${t.failed}</b>
           ${job.backupRoot && html`<br /><span class="muted small">The previous lyrics were backed up to <span class="mono">${job.backupRoot}</span></span>`}</span>
-        <button class="btn" onClick=${onDone}>New run</button>
+        <button class="btn" onClick=${onDone}><${Icon} name="refresh" /> New run</button>
       </div>`}
-      ${job.running && html`<div><button class="btn btn-danger" disabled=${job.stopping} onClick=${() => api('/jobs/current/stop', {})}>Stop</button></div>`}
+      ${job.running && html`<div><button class="btn btn-danger" disabled=${job.stopping} onClick=${() => api('/jobs/current/stop', {})}><${Icon} name="stop" /> Stop</button></div>`}
     </div>
   </div>`;
 }
@@ -1055,7 +1073,7 @@ function SettingsView({ notify, update, onCheckUpdates }) {
     const changed = changes.some((c) => c.section === s.section && c.key === s.key);
     const notDefault = JSON.stringify(s.value) !== JSON.stringify(s.default);
     const control = s.kind === 'bool'
-      ? html`<input type="checkbox" id=${id(s)} checked=${current} onChange=${(e) => set(s, e.target.checked)} />`
+      ? html`<input type="checkbox" class="switch" role="switch" id=${id(s)} checked=${current} onChange=${(e) => set(s, e.target.checked)} />`
       : s.choices
         ? html`<select id=${id(s)} value=${String(current)} onChange=${(e) => set(s, s.kind === 'int' ? Number(e.target.value) : e.target.value)}>
             ${s.choices.map((c) => html`<option value=${String(c)}>${String(c)}</option>`)}</select>`
@@ -1064,39 +1082,38 @@ function SettingsView({ notify, update, onCheckUpdates }) {
               onInput=${(e) => set(s, e.target.value)}></textarea>`
           : html`<input type="text" id=${id(s)} class=${s.section === 'cleaning' ? 'mono' : ''} value=${current}
               inputmode=${s.kind === 'int' || s.kind === 'float' ? 'decimal' : null} onInput=${(e) => set(s, e.target.value)} />`;
-    return html`<div class=${'setting' + (s.kind === 'bool' ? ' setting-bool' : '')} key=${id(s)}>
-      ${s.kind === 'bool' && control}
+    return html`<div class="setting" key=${id(s)}>
       <div class="stack-tight grow">
         <label for=${id(s)}><b>${humanize(s.key)}</b> <span class="mono muted small">${id(s)}</span>
           ${changed && html` <span class="badge b-script">changed</span>`}</label>
         ${s.help && html`<span class="muted small">${s.help}</span>`}
         ${s.kind !== 'bool' && control}
         ${s.kind === 'list' && html`<span class="muted small">One per line.</span>`}
-        ${problems[id(s)] && html`<span class="small" style=${{ color: 'var(--none-fg)' }}>${humanize(s.key)} ${problems[id(s)]}.</span>`}
+        ${problems[id(s)] && html`<span class="small" style=${{ color: 'var(--bad)' }}>${humanize(s.key)} ${problems[id(s)]}.</span>`}
         ${notDefault && html`<span><button class="btn-link" onClick=${() => set(s, fieldText(s, s.default))}>Back to the default (${s.kind === 'list' ? s.default.join(', ') || 'empty' : String(s.default) || 'empty'})</button></span>`}
       </div>
+      ${s.kind === 'bool' && control}
     </div>`;
   };
 
-  return html`<div class="stack" style=${{ maxWidth: '980px' }}>
+  return html`<div class="stack">
     <div class="stack-tight">
       <h1>Settings</h1>
       <span class="muted">Saved to <span class="mono">${data.path}</span>. Options given on the command line (such as --sidecar) still apply to this run.</span>
       <div class="row-wrap"><span class="muted">This is lyrembed ${update ? update.current : ''}.</span>
         <button class="btn btn-small" disabled=${!!(update && ['checking', 'installing'].includes(update.state))}
-          onClick=${onCheckUpdates}>${update && update.state === 'checking' && !update.quiet ? 'Looking…' : 'Check for updates'}</button></div>
+          onClick=${onCheckUpdates}><${Icon} name="refresh" /> ${update && update.state === 'checking' && !update.quiet ? 'Looking…' : 'Check for updates'}</button></div>
     </div>
     ${data.groups.map((g, i) => (i < 2
-      ? html`<section class="card pad stack" key=${g.name}><h2>${g.name}</h2>${g.settings.map(field)}</section>`
-      : html`<details class="card pad" key=${g.name}><summary><h2 style=${{ display: 'inline' }}>${g.name}</h2></summary>
-          <div class="stack" style=${{ marginTop: '14px' }}>${g.settings.map(field)}</div></details>`))}
+      ? html`<section class="group" key=${g.name}><h2>${g.name}</h2><div class="card">${g.settings.map(field)}</div></section>`
+      : html`<details class="card" key=${g.name}><summary><h2>${g.name}</h2></summary>${g.settings.map(field)}</details>`))}
     <${AliasEditor} notify=${notify} />
     <div class="card pad bar save-bar">
       <span class="grow">${changes.length ? `${changes.length} unsaved change${changes.length === 1 ? '' : 's'}` : 'No unsaved changes'}
-        ${Object.keys(problems).length > 0 && html`<span style=${{ color: 'var(--none-fg)' }}> · fix the marked fields first</span>`}</span>
+        ${Object.keys(problems).length > 0 && html`<span style=${{ color: 'var(--bad)' }}> · fix the marked fields first</span>`}</span>
       ${error && html`<span class="note note-error small">${error}</span>`}
-      <button class="btn" disabled=${!Object.keys(edits).length} onClick=${() => setEdits({})}>Undo changes</button>
-      <button class="btn btn-primary" disabled=${!changes.length || Object.keys(problems).length > 0 || saving} onClick=${save}>Save settings</button>
+      <button class="btn" disabled=${!Object.keys(edits).length} onClick=${() => setEdits({})}><${Icon} name="undo" /> Undo changes</button>
+      <button class="btn btn-primary" disabled=${!changes.length || Object.keys(problems).length > 0 || saving} onClick=${save}><${Icon} name="save" /> Save settings</button>
     </div>
   </div>`;
 }
@@ -1131,15 +1148,16 @@ function AliasEditor({ notify }) {
     }
   };
 
-  return html`<section class="card pad stack">
+  return html`<section class="group">
     <h2>Artist aliases</h2>
+    <div class="card pad stack">
     <span class="muted small">Names that mean the same artist, so a search for one finds the others, for example
       “Hoshino Gen = 星野源”. Your groups are added to the built-in ones; a group sharing a name with one is merged into it.</span>
     <label for="aliases" class="small"><b>Your groups</b>, one per line, names separated by “=”</label>
     <textarea id="aliases" class="mono" rows=${Math.max(3, groups.length + 1)} value=${draft} onInput=${(e) => setDraft(e.target.value)}></textarea>
-    ${lonely && html`<span class="small" style=${{ color: 'var(--none-fg)' }}>“${lonely[0]}” needs at least one other name.</span>`}
+    ${lonely && html`<span class="small" style=${{ color: 'var(--bad)' }}>“${lonely[0]}” needs at least one other name.</span>`}
     ${error && html`<p class="note note-error small">${error}</p>`}
-    <div><button class="btn" disabled=${!changed || !!lonely} onClick=${save}>Save aliases</button></div>
+    <div><button class="btn" disabled=${!changed || !!lonely} onClick=${save}><${Icon} name="save" /> Save aliases</button></div>
     <details>
       <summary class="small">${data.builtin.length} built-in groups</summary>
       <div class="stack-tight" style=${{ marginTop: '10px' }}>
@@ -1148,6 +1166,7 @@ function AliasEditor({ notify }) {
         <div class="alias-list small">${shown.map((g) => html`<div>${g.join(' = ')}</div>`)}</div>
       </div>
     </details>
+    </div>
   </section>`;
 }
 
@@ -1377,15 +1396,15 @@ function Editor({ track, initial, source, versions, chosen, dirty, onBack, onNex
           </div>
           <span class="muted small">Moves all lines; negative is earlier. To fix one line, press <b>Now</b> on it while it should start.</span>
           ${parsed.offset !== 0 && html`<span class="muted small">The lyrics carry an [offset:${parsed.offset}] tag, already counted in the times shown. A timing change writes it into the timestamps.</span>`}
-          <div><button class="btn btn-small" disabled=${!shift} onClick=${() => setShift(0)}>Reset timing</button></div>
+          <div><button class="btn btn-small" disabled=${!shift} onClick=${() => setShift(0)}><${Icon} name="undo" size=${14} /> Reset timing</button></div>
         </div>
         <div class="card pad stack-tight">
           <span class="label">Text</span>
           <div class="row-wrap">
-            <button class="btn btn-small" disabled=${!text.trim()} onClick=${() => setRomanizing(!romanizing)}>Romanize…</button>
+            <button class="btn btn-small" disabled=${!text.trim()} onClick=${() => setRomanizing(!romanizing)}><${Icon} name="type" size=${14} /> Romanize…</button>
             ${mode === 'lines'
-              ? html`<button class="btn btn-small" onClick=${toText}>Edit as text</button>`
-              : html`<button class="btn btn-small" onClick=${() => setMode('lines')}>Back to the lines</button>`}
+              ? html`<button class="btn btn-small" onClick=${toText}><${Icon} name="pencil" size=${14} /> Edit as text</button>`
+              : html`<button class="btn btn-small" onClick=${() => setMode('lines')}><${Icon} name="list" size=${14} /> Back to the lines</button>`}
           </div>
           ${romanizing && html`<${Romanizer} text=${text} onDone=${(result) => { setText(result); setRomanizing(false); }}
             onCancel=${() => setRomanizing(false)} />`}
@@ -1403,10 +1422,10 @@ function Editor({ track, initial, source, versions, chosen, dirty, onBack, onNex
         <b>${unsaved ? (origin.label === EMBEDDED ? 'Unsaved changes' : 'Not saved yet') : 'No changes'}</b>
         <span class="muted small">${unsaved ? 'Nothing is written to the file until you save. Ctrl+S saves.' : 'This is what the file has.'}</span>
       </div>
-      <button class="btn" disabled=${(text === origin.text && !shift) || saving} onClick=${() => { setText(origin.text); setShift(0); }}>Undo changes</button>
-      <button class="btn" disabled=${!final.trim() || !unsaved || saving} onClick=${() => save(false)}>Save</button>
+      <button class="btn" disabled=${(text === origin.text && !shift) || saving} onClick=${() => { setText(origin.text); setShift(0); }}><${Icon} name="undo" /> Undo changes</button>
+      <button class="btn" disabled=${!final.trim() || !unsaved || saving} onClick=${() => save(false)}><${Icon} name="save" /> Save</button>
       <button class="btn btn-primary" disabled=${!final.trim() || saving} onClick=${() => (unsaved ? save(true) : onNext())}>
-        ${unsaved ? 'Save and go to the next track' : 'Next track'}</button>
+        <${Icon} name=${unsaved ? 'save' : 'right'} /> ${unsaved ? 'Save and go to the next track' : 'Next track'}</button>
     </div>
   </div>`;
 }

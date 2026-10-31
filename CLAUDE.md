@@ -18,6 +18,7 @@ lyrembed/
   web.py                 The page's local HTTP server and JSON API (the default without --auto)
   batch.py               Batch mode (--auto): prints core's steps in the terminal
   static/                The page: index.html, app.js, style.css, lrc.js (editor's LRC logic),
+                         base.css and icons.js (shared with cdimport), icon.svg, logo.svg,
                          vendor/preact-htm.js
   providers.py           LRCLIB / NetEase / QQ Music / Megalobiz / syncedlyrics, ranking, search cache
   tagging.py             Metadata and cover reading, writing, mtime-keyed cache
@@ -268,6 +269,19 @@ reload on the same address, then Settings' **Check for updates**.
 **The token cookie's name carries the port** (`web.cookie_name`). Cookies
 belong to a host, not a port: a second lyrembed on 127.0.0.1 (cdimport's
 lyrics step starts one) overwrote the first one's token under one name.
+
+**lyrembed and cdimport share one look, libadwaita's** (the maintainer's
+request, 2026-10-31): they work together, so they look related and differ by
+accent (blue here, teal there) and small icon. `static/base.css` (tokens,
+buttons, fields, header bar, steps, status pages, toasts) and `static/icons.js`
+are the same file in both repos, copies like `vendor/`: change both, and keep
+what only one page has in its `style.css`. The header bar is always: program,
+workflow steps in the middle (icons, no numbers), actions; the content is a
+centred column (`main`, `.narrow`, `.wide`). Here the steps navigate (`FLOW`);
+Bulk actions and Settings lie beside the flow. `icon.svg` is unreadable below
+about 64 px: small places (header, browser tab) use `logo.svg`, the full icon
+appears only at 112 px on status pages. White on libadwaita's own accents is
+3.8:1, so the accents are a shade darker (4.8:1 and more).
 
 **The page has no build step and loads nothing from the internet.**
 `static/vendor/preact-htm.js` is htm 3.1.1's `preact/standalone.module.js`,
