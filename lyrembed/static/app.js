@@ -372,11 +372,11 @@ function App() {
         <button aria-label="Dismiss" onClick=${() => setToasts((list) => list.filter((x) => x.id !== t.id))}>×</button>
       </div>`)}
     </div>
-    ${stopped && html`<div class="overlay"><div class="card status">
+    <div class="overlay" hidden=${!stopped}><div class="card status">
       <img class="status-icon" src="/static/icon.svg" alt="" />
       <h1>lyrembed has stopped</h1>
       <p class="muted">You can close this tab. Start lyrembed again to continue.</p>
-    </div></div>`}
+    </div></div>
   `;
 }
 

@@ -287,6 +287,11 @@ new address and a browser tab. Not while a bulk run goes on. Checked
 2026-10-27 in headless Chrome with a faked release: notice, Update, Restart,
 reload on the same address, then Settings' **Check for updates**.
 
+**What shows after the server stopped is in the page from the start.** The
+"has stopped" overlay is only hidden until then, or its icon is requested from
+a server that is gone (seen 2026-10-31: a broken image after Quit, unless the
+folder picker had loaded the icon before).
+
 **The token cookie's name carries the port** (`web.cookie_name`). Cookies
 belong to a host, not a port: a second lyrembed on 127.0.0.1 (cdimport's
 lyrics step starts one) overwrote the first one's token under one name.

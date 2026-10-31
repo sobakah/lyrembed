@@ -122,3 +122,6 @@ main.with-player { padding-bottom: 96px; }
 .toasts.above-player { bottom: 84px; }
 
 .folders { max-height: 360px; overflow: auto; display: flex; flex-direction: column; }
+
+/* In the page from the start: once it shows, the server that has the icon is gone. */
+.overlay[hidden] { display: none; }
