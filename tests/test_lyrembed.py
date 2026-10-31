@@ -2443,6 +2443,30 @@ def test_bulk_sidecar_export_backs_up_a_differing_sidecar(cfg, tmp_path, state_d
     assert [p.read_text(encoding="utf-8") for p in state_dir.rglob("*.lrc")] == ["[00:01.00]old"]
 
 
+def test_a_tracks_lyrics_are_extracted_to_a_sidecar_from_its_page(cfg, tmp_path, state_dir):
+    music = tmp_path / "music"
+    music.mkdir()
+    track = _flac_with_lyrics(music / "a.flac", "[00:01.00]new")
+    bare = _make_flac(music / "b.flac")
+    sidecar = tagging.sidecar_path(track)
+    session = web.WebSession(music, [track, bare], tagging.MetadataCache())
+
+    first = session.extract(0)
+    assert first["message"] == "Wrote a.lrc."
+    assert sidecar.read_text(encoding="utf-8") == "[00:01.00]new"
+    assert first["track"]["staleSidecar"] == "a.lrc" and first["track"]["hasSidecar"]
+    assert session.extract(0)["message"] == "a.lrc is already up to date."
+
+    sidecar.write_text("[00:01.00]old", encoding="utf-8")
+    assert session.extract(0)["message"] == "Wrote a.lrc; the previous one was backed up."
+    assert sidecar.read_text(encoding="utf-8") == "[00:01.00]new"
+    assert [p.read_text(encoding="utf-8") for p in state_dir.rglob("*.lrc")] == ["[00:01.00]old"]
+
+    with pytest.raises(web.ApiError) as nothing:
+        session.extract(1)
+    assert nothing.value.status == 400 and not tagging.sidecar_path(bare).exists()
+
+
 def _searchable(tmp_path, title, artist):
     from mutagen.flac import FLAC
 

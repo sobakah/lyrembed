@@ -623,6 +623,17 @@ function TrackView({ library, index, notify, onOpen, onHome, onUpdated, onNext, 
     }
   };
 
+  const extract = async () => {
+    try {
+      const result = await api(`/tracks/${index}/extract`, {});
+      setTrack(result.track);
+      onUpdated(result.track);
+      notify(result.message);
+    } catch (err) {
+      notify(err.message, 'error');
+    }
+  };
+
   const summary = library.tracks[index];
   return html`<div class="split">
     <aside class="card side" aria-label="Tracks">
@@ -670,6 +681,7 @@ function TrackView({ library, index, notify, onOpen, onHome, onUpdated, onNext, 
           <div class="row-wrap">
             <button class="btn btn-primary" onClick=${() => onEdit(track.lyrics, 'Embedded')}><${Icon} name="pencil" /> Check and edit</button>
             <button class="btn" disabled=${searching} onClick=${() => setSearching(true)}><${Icon} name="search" /> Search for other versions</button>
+            <button class="btn" onClick=${extract}><${Icon} name="down" /> Extract to .lrc</button>
             <button class="btn btn-danger" onClick=${remove}><${Icon} name="trash" /> Delete lyrics…</button>
           </div>
         </div>`}
@@ -850,7 +862,7 @@ const ACTIONS = {
       + 'The layout follows the setting "romanization layout". The previous lyrics are backed up first.',
   },
   sidecars: {
-    label: 'Write .lrc files from embedded lyrics',
+    label: 'Extract embedded lyrics to .lrc files',
     about: 'Writes each track\'s embedded lyrics to a .lrc file next to it. A differing .lrc file is backed up first.',
   },
   delete: {

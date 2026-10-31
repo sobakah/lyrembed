@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Added
+
+- **Extract to .lrc** on a track's page writes its embedded lyrics to a `.lrc` file next to it, as the bulk action, now called **Extract embedded lyrics to .lrc files**, does for many tracks. A differing `.lrc` file is backed up first.
+
+### Fixed
+
+- The lists of the page's dropdowns, such as the setting **romanization layout**, are readable in dark mode.
+
 ## [1.1.0] — 2026-10-31
 
 ### Changed

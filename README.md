@@ -174,7 +174,7 @@ Batch mode and the bulk fetch skip such tracks and report them as instrumental; 
 |---|---|
 | Fetch lyrics automatically | The same confident-match rules as `--auto`, optionally replacing existing lyrics, as a dry run, or romanizing what it saves |
 | Romanize embedded lyrics | Detected script per track, Han characters read as Chinese unless the context says Japanese, layout from `settings.romanization_layout`. Latin lyrics and lyrics romanized before are skipped |
-| Write .lrc files from embedded lyrics | A `.lrc` file next to each track |
+| Extract embedded lyrics to .lrc files | A `.lrc` file next to each track; **Extract to .lrc** on a track's page does the same for one track |
 | Delete embedded lyrics | Asks once, optionally with their `.lrc` files |
 
 Lyrics the actions replace or delete, and `.lrc` files they overwrite, are backed up to `$XDG_STATE_HOME/lyrembed/backups/<time>/` first.

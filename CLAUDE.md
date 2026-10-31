@@ -36,7 +36,7 @@ tests/lrc.test.mjs         Node tests for static/lrc.js (run by the pytest suite
 
 ```bash
 pip install -e ".[all,dev]"     # all optional backends plus pytest/pyflakes
-pytest -q                       # 220 tests; 24 skip without the optional backends,
+pytest -q                       # 221 tests; 24 skip without the optional backends,
                                 # 2 more without ffmpeg or node
 python -m pyflakes lyrembed/ tests/ run.py
 python run.py --version

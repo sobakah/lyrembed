@@ -216,7 +216,7 @@ class Import:
 JOB_LABELS = {
     "fetch": "Fetch lyrics automatically",
     "romanize": "Romanize embedded lyrics",
-    "sidecars": "Write .lrc files from embedded lyrics",
+    "sidecars": "Extract embedded lyrics to .lrc files",
     "delete": "Delete embedded lyrics",
 }
 
@@ -737,6 +737,26 @@ class WebSession:
                 raise ApiError(500, str(exc)) from exc
         return {"track": self.track(index)}
 
+    def extract(self, index: int) -> dict:
+        """Write a track's embedded lyrics to its .lrc file. This is the bulk
+        action for one track, so a differing file is backed up the same way."""
+        with self.lock:
+            meta = self._meta(index)
+            if not meta.lyrics:
+                raise ApiError(400, "This track has no embedded lyrics to extract.")
+            steps = core.bulk("sidecars", [meta.path], self.base_dir, self.cache, core.backup_directory())
+            step = next(s for s in steps if isinstance(s, core.Outcome))
+            if step.result == "failed":
+                raise ApiError(500, step.message)
+        name = tagging.sidecar_path(meta.path).name
+        if step.result == "skipped":
+            message = f"{name} is already up to date."
+        elif step.backed_up:
+            message = f"Wrote {name}; the previous one was backed up."
+        else:
+            message = f"Wrote {name}."
+        return {"message": message, "track": self.track(index)}
+
     # importing a CD
     def cdimport(self) -> str | None:
         checked, found = self._cdimport
@@ -975,7 +995,7 @@ class Updates:
 
 
 # --- HTTP --------------------------------------------------------------------
-_TRACK_ROUTE = re.compile(r"^/api/tracks/(\d+)(?:/(search|save|delete))?$")
+_TRACK_ROUTE = re.compile(r"^/api/tracks/(\d+)(?:/(search|save|delete|extract))?$")
 _AUDIO_ROUTE = re.compile(r"^/api/tracks/(\d+)/audio$")
 _COVER_ROUTE = re.compile(r"^/api/tracks/(\d+)/cover$")
 
@@ -1266,6 +1286,8 @@ class _Handler(BaseHTTPRequestHandler):
                 return session.save(index, str(body.get("lyrics", "")))
             if method == "POST" and action == "delete":
                 return session.delete(index, bool(body.get("sidecar")))
+            if method == "POST" and action == "extract":
+                return session.extract(index)
         raise ApiError(404, "Not found.")
 
 
