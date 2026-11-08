@@ -841,7 +841,7 @@ def is_credit_line(line: str) -> bool:
     return label.upper() in ("OP", "SP") or label in _CREDIT_LABELS
 
 
-def detect_script(text: str) -> str | None:
+def detect_script(text: str, han_hint: str | None = None) -> str | None:
     """Best guess at the dominant script, for romanization defaults.
 
     Returns "mixed" only when two different Asian scripts share the text, since
@@ -852,7 +852,7 @@ def detect_script(text: str) -> str | None:
     credit headers and LRC tags ([ti:...]) are ignored, because they are
     metadata rather than lyrics.
     """
-    asian, has_other = _asian_languages(text)
+    asian, has_other = _asian_languages(text, han_hint)
     if len(asian) > 1:
         return "mixed"
     if asian:
@@ -860,9 +860,12 @@ def detect_script(text: str) -> str | None:
     return "any" if has_other else None
 
 
-def _asian_languages(text: str) -> tuple[set[str], bool]:
+def _asian_languages(text: str, han_hint: str | None = None) -> tuple[set[str], bool]:
     """The Asian languages in the lyrics ("ko", "ja", "zh"), and whether
-    other non-Latin letters occur."""
+    other non-Latin letters occur. *han_hint* "ja" (a caller's outside
+    knowledge, such as a LANGUAGE tag) reads Han runs that nothing in the
+    text decides as Japanese, as Kana elsewhere would; it never overrides
+    Chinese evidence."""
     asian: set[str] = set()
     has_other = False
     trust_ja = contains_kana(text)
@@ -893,14 +896,15 @@ def _asian_languages(text: str) -> tuple[set[str], bool]:
     # the lyrics decide. Read as Chinese, '約束' made a Japanese song "mixed"
     # and its Kanji lines came out as Pinyin.
     if undecided:
-        asian.add("ja" if trust_ja and "zh" not in asian else "zh")
+        japanese = trust_ja or han_hint == "ja"
+        asian.add("ja" if japanese and "zh" not in asian else "zh")
     return asian, has_other
 
 
-def missing_packages(text: str) -> list[str]:
+def missing_packages(text: str, han_hint: str | None = None) -> list[str]:
     """The romanization packages the lyrics' languages need but are not
     installed. Mixed mode reported "already romanized" when they were all
     missing, and half-converted lyrics when some were."""
-    asian, _ = _asian_languages(text)
+    asian, _ = _asian_languages(text, han_hint)
     return [ROMANIZERS[lang][2] for lang in ("ko", "ja", "zh")
             if lang in asian and not ROMANIZERS[lang][1]()]

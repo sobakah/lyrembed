@@ -320,20 +320,20 @@ def romanize_for_display(lyrics: str, han_hint: str | None = None) -> tuple[str 
     config says: the player needs the original to pair the lines, and it
     writes nothing. *han_hint* ("ja" or "zh") is what the player knows from
     elsewhere (Kana in other songs of the album, a LANGUAGE tag): it decides
-    Han runs nothing else disambiguates, and makes Kanji-only lyrics
-    Japanese. Returns (lyrics, language, "") or (None, language or None,
-    reason it was left alone).
+    Han runs nothing else disambiguates, so Kanji-only lyrics can come out
+    Japanese, but never outweighs Chinese evidence in the text. Returns
+    (lyrics, language, "") or (None, language or None, reason it was left
+    alone).
     """
     lyrics = text.unix_newlines(lyrics)
     if text.script_label(lyrics) == "latin":
         return None, None, "already Latin"
-    key = text.detect_script(lyrics)
-    if key == "zh" and han_hint == "ja":
-        key = "ja"
+    key = text.detect_script(lyrics, han_hint)
     if key not in text.ROMANIZERS:
         return None, None, "no script to romanize"
     _, available, package = text.ROMANIZERS[key]
-    missing = text.missing_packages(lyrics) if key == "mixed" else [] if available() else [package]
+    missing = (text.missing_packages(lyrics, han_hint) if key == "mixed"
+               else [] if available() else [package])
     if missing:
         return None, key, _not_installed(missing)
     han_default = han_hint if han_hint in ("ja", "zh") else "zh"

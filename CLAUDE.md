@@ -336,6 +336,9 @@ process running, so the JSON shape (`id`, `lyrics`, `language`, `reason`,
 for `romanize` before the normal parser: as a path argument it would be a
 folder called "romanize". The layout is always "below"
 (`core.romanize_for_display`), since the player pairs the lines itself.
+The `han_hint` only settles undecided Han runs (`_asian_languages`), as
+Kana would, and never outweighs Chinese evidence: a first version that
+turned every "zh" into "ja" romanized `我爱你` in Rōmaji.
 
 **Retired settings get a note, not "unknown key".** `config._RETIRED` lists
 the settings of the terminal menus (`default_editor`, `preview_lines`,

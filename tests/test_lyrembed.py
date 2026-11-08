@@ -3266,4 +3266,7 @@ def test_a_japanese_hint_reads_kanji_only_lyrics_as_japanese():
     hinted, language, _ = core.romanize_for_display("[00:01.00]約束", "ja")
     assert language == "ja"
     assert hinted == "[00:01.00]約束\n[00:01.00]yakusoku"
+    # Chinese evidence wins over the hint: 爱 is in no Japanese standard.
+    chinese, language, _ = core.romanize_for_display("[00:01.00]我爱你", "ja")
+    assert language == "zh" and "ài" in chinese
 

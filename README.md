@@ -202,7 +202,7 @@ Romanization never drops characters: pykakasi silently deletes characters it can
 ← {"id": 1, "lyrics": "[00:01.00]사랑해요\n[00:01.00]saranghaeyo", "language": "ko", "reason": ""}
 ```
 
-The romanized line always goes below the original, whatever `settings.romanization_layout` says, and timestamps are kept. `han_hint` (`"ja"`, `"zh"` or `null`) is what the program knows about ambiguous Han characters, for example from a `LANGUAGE` tag; with `"ja"`, lyrics of Kanji alone are read as Japanese. Lyrics that need nothing (Latin, already romanized) come back as `null` with the reason, and a line that isn't a request gets an `error`. Nothing is written and nothing goes over the network.
+The romanized line always goes below the original, whatever `settings.romanization_layout` says, and timestamps are kept. `han_hint` (`"ja"`, `"zh"` or `null`) is what the program knows about ambiguous Han characters, for example from a `LANGUAGE` tag: with `"ja"`, Han characters that nothing in the lyrics decides are read as Japanese, as Kana elsewhere in the song would make them. Characters only Chinese uses still count as Chinese. Lyrics that need nothing (Latin, already romanized) come back as `null` with the reason, and a line that isn't a request gets an `error`. Nothing is written and nothing goes over the network.
 
 ### Limitations
 
