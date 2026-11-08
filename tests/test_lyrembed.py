@@ -3220,3 +3220,50 @@ def test_restart_finds_the_launcher_as_windows_starts_it(monkeypatch):
     monkeypatch.setattr(selfupdate.shutil, "which", lambda name: name + ".exe")
     monkeypatch.setattr(selfupdate, "Path", PureWindowsPath)
     assert selfupdate.restart_argv() == [r"C:\pipx\venvs\lyrembed\Scripts\lyrembed.exe", "--flag"]
+
+
+# --- romanize --stdio (for Gatefold) ----------------------------------------
+
+def _romanize_lines(*requests: str) -> list[dict]:
+    import io
+    import json
+    out = io.StringIO()
+    cli.romanize_stdio(io.StringIO("".join(r + "\n" for r in requests)), out)
+    return [json.loads(line) for line in out.getvalue().splitlines()]
+
+
+def test_romanize_stdio_answers_every_line_and_survives_bad_ones():
+    answers = _romanize_lines('{"id": 7, "lyrics": "just english"}', "", "not json",
+                              '{"id": 8}', '{"id": "x", "lyrics": "[00:01.00]Hello"}')
+    assert [a["id"] for a in answers] == [7, None, None, "x"]
+    assert answers[0] == {"id": 7, "lyrics": None, "language": None, "reason": "already Latin"}
+    assert "error" in answers[1] and "error" in answers[2]
+    assert answers[3]["lyrics"] is None
+
+
+def test_romanize_help_names_stdio_which_gatefold_looks_for(capsys):
+    with pytest.raises(SystemExit):
+        cli.main(["romanize", "--help"])
+    assert "--stdio" in capsys.readouterr().out
+
+
+@pytest.mark.skipif(not text.HAS_KOREAN, reason="korean-romanizer not installed")
+def test_romanize_stdio_puts_the_romanization_below_whatever_the_layout(cfg):
+    cfg["settings"]["romanization_layout"] = "replace"
+    [answer] = _romanize_lines('{"id": 1, "lyrics": "[00:01.00]사랑해요\\r\\n[00:03.00]Hello"}')
+    assert answer["language"] == "ko"
+    assert answer["lyrics"] == "[00:01.00]사랑해요\n[00:01.00]saranghaeyo\n[00:03.00]Hello"
+    # Already in that form: nothing to do.
+    again = core.romanize_for_display(answer["lyrics"])
+    assert again == (None, "ko", "already romanized")
+
+
+@pytest.mark.skipif(not (text.HAS_KAKASI and text.HAS_PYPINYIN),
+                    reason="needs pykakasi and pypinyin")
+def test_a_japanese_hint_reads_kanji_only_lyrics_as_japanese():
+    alone, language, _ = core.romanize_for_display("[00:01.00]約束")
+    assert language == "zh" and "yakusoku" not in alone
+    hinted, language, _ = core.romanize_for_display("[00:01.00]約束", "ja")
+    assert language == "ja"
+    assert hinted == "[00:01.00]約束\n[00:01.00]yakusoku"
+

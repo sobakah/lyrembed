@@ -36,7 +36,7 @@ tests/lrc.test.mjs         Node tests for static/lrc.js (run by the pytest suite
 
 ```bash
 pip install -e ".[all,dev]"     # all optional backends plus pytest/pyflakes
-pytest -q                       # 221 tests; 24 skip without the optional backends,
+pytest -q                       # 225 tests; 26 skip without the optional backends,
                                 # 2 more without ffmpeg or node
 python -m pyflakes lyrembed/ tests/ run.py
 python run.py --version
@@ -328,6 +328,14 @@ literal backslash in a quoted argument becomes four. The menu gives no
 folder and starts in the home folder; `cli` then opens the picker in
 `core.music_folder()` without the home-folder warning, which only appears
 for a folder given on purpose.
+
+**`lyrembed romanize --stdio` is Gatefold's interface** (added in 1.1.1).
+Gatefold finds it by `--stdio` in `lyrembed romanize --help` and keeps one
+process running, so the JSON shape (`id`, `lyrics`, `language`, `reason`,
+`error`) and the one-answer-per-line flushing must stay. `cli.main` checks
+for `romanize` before the normal parser: as a path argument it would be a
+folder called "romanize". The layout is always "below"
+(`core.romanize_for_display`), since the player pairs the lines itself.
 
 **Retired settings get a note, not "unknown key".** `config._RETIRED` lists
 the settings of the terminal menus (`default_editor`, `preview_lines`,

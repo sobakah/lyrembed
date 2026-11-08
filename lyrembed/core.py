@@ -312,6 +312,37 @@ def auto_romanize(lyrics: str) -> tuple[str | None, str]:
     return result, ""
 
 
+def romanize_for_display(lyrics: str, han_hint: str | None = None) -> tuple[str | None, str | None, str]:
+    """Romanization under each original line, for a player that shows both
+    (Gatefold, through ``lyrembed romanize --stdio``).
+
+    Unlike :func:`auto_romanize` the layout is always "below", whatever the
+    config says: the player needs the original to pair the lines, and it
+    writes nothing. *han_hint* ("ja" or "zh") is what the player knows from
+    elsewhere (Kana in other songs of the album, a LANGUAGE tag): it decides
+    Han runs nothing else disambiguates, and makes Kanji-only lyrics
+    Japanese. Returns (lyrics, language, "") or (None, language or None,
+    reason it was left alone).
+    """
+    lyrics = text.unix_newlines(lyrics)
+    if text.script_label(lyrics) == "latin":
+        return None, None, "already Latin"
+    key = text.detect_script(lyrics)
+    if key == "zh" and han_hint == "ja":
+        key = "ja"
+    if key not in text.ROMANIZERS:
+        return None, None, "no script to romanize"
+    _, available, package = text.ROMANIZERS[key]
+    missing = text.missing_packages(lyrics) if key == "mixed" else [] if available() else [package]
+    if missing:
+        return None, key, _not_installed(missing)
+    han_default = han_hint if han_hint in ("ja", "zh") else "zh"
+    result = text.romanize_lyrics(lyrics, key, han_default, keep_original=True)
+    if result == lyrics:
+        return None, key, "already romanized"
+    return result, key, ""
+
+
 # --- batch runs --------------------------------------------------------------
 @dataclass
 class Searching:

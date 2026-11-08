@@ -2,7 +2,7 @@
 
 Vibecoded tool for Linux, macOS and Windows to search, check, romanize and embed synchronized (`.lrc`) and plain lyrics into FLAC, MP3, OGG Vorbis, Opus and M4A files, with a focus on East Asian music. You work on a page in your browser that only your own computer can reach; batch mode runs in the terminal.
 
-Version 1.1.0 · Python 3.10+ · MIT
+Version 1.1.1 · Python 3.10+ · MIT
 
 Formerly called **lrckit**; see the [changelog](CHANGELOG.md) for moving an existing setup. Version 0.8.0 replaced the terminal menus with the browser page.
 
@@ -192,6 +192,17 @@ Hangul and Kana are unambiguous. A Han run is read as Chinese when it contains a
 Pick **Mixed scripts** under **Romanize…** in the editor; it is preselected when two different Asian scripts share the text, and search results with such lyrics carry a `MIXED` badge instead of `ORIG`. A line like `사랑해 我爱你 ありがとう` becomes `saranghae wǒ ài nǐ arigatou` in one pass. After choosing the script you choose the layout: replace each line, or keep it and add the romanized line below with the same timestamp. `settings.romanization_layout` sets which of the two is preselected.
 
 Romanization never drops characters: pykakasi silently deletes characters it cannot read (and sometimes the one after them), so those are converted with pypinyin — or anyascii — instead.
+
+### For other programs
+
+`lyrembed romanize --stdio` romanizes lyrics for display in another program, such as the music player Gatefold, which shows the romanization under each original line. It reads one JSON object per line from standard input and answers each with one line on standard output, until the input ends:
+
+```
+→ {"id": 1, "lyrics": "[00:01.00]사랑해요", "han_hint": null}
+← {"id": 1, "lyrics": "[00:01.00]사랑해요\n[00:01.00]saranghaeyo", "language": "ko", "reason": ""}
+```
+
+The romanized line always goes below the original, whatever `settings.romanization_layout` says, and timestamps are kept. `han_hint` (`"ja"`, `"zh"` or `null`) is what the program knows about ambiguous Han characters, for example from a `LANGUAGE` tag; with `"ja"`, lyrics of Kanji alone are read as Japanese. Lyrics that need nothing (Latin, already romanized) come back as `null` with the reason, and a line that isn't a request gets an `error`. Nothing is written and nothing goes over the network.
 
 ### Limitations
 

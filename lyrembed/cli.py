@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import sys
@@ -20,6 +21,8 @@ def build_parser() -> argparse.ArgumentParser:
         description="Search, check, romanize and embed synchronized and plain lyrics "
                     "in FLAC, MP3, OGG Vorbis, Opus and M4A files. Opens a page in your browser "
                     "(only this computer can reach it); --auto works without one.",
+        epilog="lyrembed romanize --stdio romanizes lyrics for display in another program "
+               "(see lyrembed romanize --help).",
     )
     parser.add_argument("path", nargs="?", help="music directory (default: current directory)")
     parser.add_argument("--version", action="version", version=f"lyrembed {__version__}")
@@ -190,7 +193,57 @@ def _desktop_entry(install: bool) -> int:
     return 0
 
 
+def romanize_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="lyrembed romanize",
+        description=(
+            "Romanize lyrics for display in another program, without writing "
+            "anything and without network access. With --stdio it reads one JSON "
+            'object per line from standard input, {"id": ..., "lyrics": "...", '
+            '"han_hint": "ja" | "zh" | null}, and answers each with one line, '
+            '{"id": ..., "lyrics": "..." | null, "language": "ko" | "ja" | "zh" | '
+            '"mixed" | "any" | null, "reason": "..."}: the lyrics with each '
+            "romanized line under its original (timestamps kept), or null and why "
+            "they were left alone. It runs until standard input ends."
+        ),
+    )
+    parser.add_argument("--stdio", action="store_true", required=True,
+                        help="read requests from standard input, answer on standard output")
+    return parser
+
+
+def romanize_stdio(stdin, stdout) -> None:
+    """The loop behind ``lyrembed romanize --stdio``: one answer per request
+    line, flushed at once, so a long-running caller can wait for each.
+    A line that isn't a request is answered with an error, not a crash."""
+    for line in stdin:
+        if not line.strip():
+            continue
+        answer: dict = {"id": None}
+        try:
+            request = json.loads(line)
+            if not isinstance(request, dict) or not isinstance(request.get("lyrics"), str):
+                raise ValueError('expected {"id": ..., "lyrics": "..."}')
+            answer["id"] = request.get("id")
+            hint = request.get("han_hint")
+            lyrics, language, reason = core.romanize_for_display(
+                request["lyrics"], hint if hint in ("ja", "zh") else None)
+            answer.update(lyrics=lyrics, language=language, reason=reason)
+        except (ValueError, TypeError) as exc:
+            answer.update(lyrics=None, language=None, error=str(exc))
+        stdout.write(json.dumps(answer, ensure_ascii=False) + "\n")
+        stdout.flush()
+
+
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["romanize"]:
+        romanize_parser().parse_args(argv[1:])
+        try:
+            romanize_stdio(sys.stdin, sys.stdout)
+        except KeyboardInterrupt:
+            return 130
+        return 0
     args = parse_args(argv)
     configure_logging(args.verbose)
 

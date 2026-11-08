@@ -3,10 +3,11 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [Unreleased]
+## [1.1.1] — 2026-11-08
 
 ### Added
 
+- **`lyrembed romanize --stdio`** romanizes lyrics for display in another program, such as Gatefold, without writing anything: JSON lines in, the lyrics with each romanized line under its original out. A hint decides ambiguous Han characters. See [For other programs](README.md#for-other-programs).
 - **Extract to .lrc** on a track's page writes its embedded lyrics to a `.lrc` file next to it, as the bulk action, now called **Extract embedded lyrics to .lrc files**, does for many tracks. A differing `.lrc` file is backed up first.
 
 ### Fixed
@@ -749,6 +750,7 @@ LRCLIB, NetEase and `syncedlyrics`; confidence-aware ranking; batch mode with
   time. Traditional Chinese resolves less often than simplified for this
   reason.
 
+[1.1.1]: https://github.com/sobakah/lyrembed/releases/tag/1.1.1
 [1.1.0]: https://github.com/sobakah/lyrembed/releases/tag/1.1.0
 [1.0.1]: https://github.com/sobakah/lyrembed/releases/tag/1.0.1
 [1.0.0]: https://github.com/sobakah/lyrembed/releases/tag/1.0.0
