@@ -9,9 +9,11 @@ description = "Search, check, romanize and embed synchronized lyrics into audio 
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
+# jeepney: the D-Bus interface (--dbus); without it only that is missing.
 dependencies = [
     "mutagen>=1.45",
     "requests>=2.28",
+    "jeepney>=0.8",
 ]
 
 [project.optional-dependencies]

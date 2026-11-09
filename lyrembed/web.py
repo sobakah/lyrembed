@@ -43,7 +43,7 @@ _CONTENT_TYPES = {
     ".svg": "image/svg+xml",
 }
 # Cookies belong to a host, not a port: two pages on 127.0.0.1 (a second
-# lyrembed, lyrembed and cdimport handing a tab to each other) would overwrite
+# lyrembed, lyrembed and cdport handing a tab to each other) would overwrite
 # each other's token under one name. The port goes into the name.
 COOKIE = "lyrembed_token"
 
@@ -146,34 +146,42 @@ def _is_alac(path: Path) -> bool:
         return False
 
 
-# --- importing a CD with cdimport ----------------------------------------------
-# cdimport's lines this reads (cdimport/web.py, serve): its page's address,
-# and the album folder when the run is done.
-_CDIMPORT_PAGE = re.compile(r"cdimport is running at (http://(?:127\.0\.0\.1|localhost):\d+/\?token=[A-Za-z0-9_-]+)")
-_CDIMPORT_DONE = re.compile(r"^cdimport finished: (.+)$")
-# After cdimport sends the tab back, lyrembed's page needs a moment to load:
+# --- importing a CD with cdport -----------------------------------------------
+# cdport's lines this reads (cdport/web.py, RUNNING_LINE and FINISHED_LINE):
+# its page's address, and the album folder when the run is done. cdport
+# was called cdimport before 1.3.0; started under that name it still says
+# "cdimport", and a 1.2.x says nothing else.
+_CDPORT_NAMES = ("cdport", "cdimport")
+_CDPORT_PAGE = re.compile(r"(?:cdport|cdimport) is running at "
+                          r"(http://(?:127\.0\.0\.1|localhost):\d+/\?token=[A-Za-z0-9_-]+)")
+_CDPORT_DONE = re.compile(r"^(?:cdport|cdimport) finished: (.+)$")
+# After cdport sends the tab back, lyrembed's page needs a moment to load:
 # until then, its "closing" from leaving does not count.
 IMPORT_GRACE = 30.0
 
 
-def find_cdimport() -> str | None:
-    """cdimport, if it is installed and can lead back to lyrembed's page
-    (--return-url, cdimport 0.6.0 and newer)."""
-    found = shutil.which("cdimport")
-    if found is None:
-        local = Path.home() / ".local" / "bin" / "cdimport"
-        found = str(local) if local.is_file() else None
-    if found is None:
-        return None
-    try:
-        result = subprocess.run([found, "--help"], capture_output=True, text=True, timeout=20)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return found if "--return-url" in result.stdout else None
+def find_cdport() -> str | None:
+    """cdport, if it is installed and can lead back to lyrembed's page
+    (--return-url: every cdport, cdimport from 0.6.0). cdport first: it also
+    installs a cdimport command, and a cdimport found alone may be an old one."""
+    for name in _CDPORT_NAMES:
+        found = shutil.which(name)
+        if found is None:
+            local = Path.home() / ".local" / "bin" / name
+            found = str(local) if local.is_file() else None
+        if found is None:
+            continue
+        try:
+            result = subprocess.run([found, "--help"], capture_output=True, text=True, timeout=20)
+        except (OSError, subprocess.SubprocessError):
+            continue
+        if "--return-url" in result.stdout:
+            return found
+    return None
 
 
 class Import:
-    """cdimport running for lyrembed's page: started with this page as its
+    """cdport running for lyrembed's page: started with this page as its
     way back, and read to its end for the album it imported."""
 
     def __init__(self, command: list[str]) -> None:
@@ -192,10 +200,10 @@ class Import:
         for line in self.process.stdout:
             line = line.rstrip("\n")
             self.lines = (self.lines + [line])[-20:]
-            if not self.url and (page := _CDIMPORT_PAGE.search(line)):
+            if not self.url and (page := _CDPORT_PAGE.search(line)):
                 self.url = page.group(1)
                 self._found.set()
-            elif done := _CDIMPORT_DONE.match(line):
+            elif done := _CDPORT_DONE.match(line):
                 self.album = Path(done.group(1))
         self.process.wait()
         self.ended_at = time.monotonic()
@@ -365,10 +373,10 @@ class WebSession:
         # Done button ends lyrembed and sends the tab back there.
         self.return_url = ""
         self.return_name = ""
-        # Importing a CD: this page's own address (cdimport leads back to it),
-        # the cdimport found (checked once), the run, the album it brought.
+        # Importing a CD: this page's own address (cdport leads back to it),
+        # the cdport found (checked once), the run, the album it brought.
         self.page_url = ""
-        self._cdimport: tuple[bool, str | None] = (False, None)
+        self._cdport: tuple[bool, str | None] = (False, None)
         self.importing: Import | None = None
         self.imported = ""
         # Embedded cover per (path, mtime) and cover file per (path, mtime_ns):
@@ -490,7 +498,7 @@ class WebSession:
 
     def library(self) -> dict:
         with self.lock:
-            # First, so the answer already shows an album cdimport just brought.
+            # First, so the answer already shows an album cdport just brought.
             imported = self._take_imported()
             tracks = [self._summary(i, self.cache.get(p)) for i, p in enumerate(self.files)]
             covers = {t["cover"] for t in tracks}
@@ -504,7 +512,7 @@ class WebSession:
                 "cover": shared,
                 # The quick romanization's starting point: off unless the
                 # setting batch mode follows is on.
-                "cdimport": bool(self.cdimport()) and not self.return_url,
+                "cdport": bool(self.cdport()) and not self.return_url,
                 "importing": bool(self.importing and self.importing.running),
                 "imported": imported,
                 "returnUrl": self.return_url,
@@ -758,22 +766,22 @@ class WebSession:
         return {"message": message, "track": self.track(index)}
 
     # importing a CD
-    def cdimport(self) -> str | None:
-        checked, found = self._cdimport
+    def cdport(self) -> str | None:
+        checked, found = self._cdport
         if not checked:
-            found = find_cdimport()
-            self._cdimport = (True, found)
+            found = find_cdport()
+            self._cdport = (True, found)
         return found
 
     def start_import(self) -> dict:
-        """Start cdimport on its own page, which leads back here; returns its
+        """Start cdport on its own page, which leads back here; returns its
         address. A run still going is joined instead of starting another."""
         with self.lock:
             if self.importing is not None and self.importing.running and self.importing.url:
                 return {"url": self.importing.url}
-            found = self.cdimport()
+            found = self.cdport()
             if found is None:
-                raise ApiError(404, "cdimport 0.6.0 or newer is not installed.")
+                raise ApiError(404, "cdport is not installed.")
             if not self.page_url:
                 raise ApiError(409, "This page's address is not known.")
             run = Import([found, "--web", "--no-browser", "--return-url", self.page_url, "--return-name", "lyrembed"])
@@ -781,18 +789,18 @@ class WebSession:
         url = run.wait_for_page(20.0)
         if not url:
             last = "; ".join(run.lines[-3:]) or "no output"
-            raise ApiError(500, f"cdimport did not open its page: {last}")
+            raise ApiError(500, f"cdport did not open its page: {last}")
         return {"url": url}
 
     def import_away(self) -> bool:
-        """The tab is on cdimport's page, or only just came back."""
+        """The tab is on cdport's page, or only just came back."""
         run = self.importing
         if run is None:
             return False
         return run.running or (run.ended_at is not None and time.monotonic() - run.ended_at < IMPORT_GRACE)
 
     def _take_imported(self) -> str:
-        """Once cdimport is done: open the album it brought, and say so once."""
+        """Once cdport is done: open the album it brought, and say so once."""
         run = self.importing
         busy = self.job is not None and self.job.running
         if run is not None and not run.running and run.album is not None and not busy:
@@ -924,7 +932,7 @@ class WebSession:
 # --- a newer lyrembed --------------------------------------------------------
 def wants_update_check(session) -> bool:
     """Whether the page looks for a newer lyrembed: at every start (in a thread,
-    so the start doesn't wait), unless switched off or opened by cdimport."""
+    so the start doesn't wait), unless switched off or opened by cdport."""
     return bool(config.get("settings", "check_for_updates", True)) and not session.return_url
 
 
@@ -1291,14 +1299,25 @@ class _Handler(BaseHTTPRequestHandler):
         raise ApiError(404, "Not found.")
 
 
-def serve(session: WebSession, open_browser: bool = True, port: int = 0, token: str = "") -> int:
+# The page's address, the first line serve prints: read by cdport and by
+# dbus_service, keep the wording.
+RUNNING_LINE = "lyrembed is running at {url}"
+
+
+def serve(session: WebSession, open_browser: bool = True, port: int = 0, token: str = "",
+          unvisited: float = 0) -> int:
     """Run the page until it is quit or closed; returns the exit code.
 
     port and token come from the lyrembed this one replaced after an update
     (cli.RESTART_ENV): the same address and cookie, so its open tab only
     needs to reload. When the port is taken meanwhile, a new one is printed.
+    unvisited: stop when nobody opened the page for that many seconds (0:
+    wait for ever). Pages started over D-Bus use it: a caller that never
+    opened the address would otherwise keep lyrembed, and the service that
+    started it, running until logout.
     """
     restarted = bool(token)
+    began = time.monotonic()
     token = token or secrets.token_urlsafe(24)
     try:
         server = _Server(session, token, port)
@@ -1310,13 +1329,14 @@ def serve(session: WebSession, open_browser: bool = True, port: int = 0, token: 
         server = _Server(session, token, 0)
         open_browser = True
     url = f"http://127.0.0.1:{server.port}/?token={token}"
-    # Where cdimport's page sends the tab back; the cookie is already set.
+    # Where cdport's page sends the tab back; the cookie is already set.
     session.page_url = f"http://127.0.0.1:{server.port}/"
     thread = threading.Thread(target=server.serve_forever, name="lyrembed-web", daemon=True)
     thread.start()
     try:
-        # The first line's wording is read by cdimport (web._HANDOFF there).
-        ui.info(f"lyrembed is running at {url}")
+        # The first line's wording is read by cdport (web._HANDOFF there) and
+        # by dbus_service (_PAGE).
+        ui.info(RUNNING_LINE.format(url=url))
         opened = open_browser and webbrowser.open(url)
         if session.return_url:
             ui.info(f"Its Done button ends lyrembed and goes back to {session.return_name or 'the previous page'}.")
@@ -1333,6 +1353,9 @@ def serve(session: WebSession, open_browser: bool = True, port: int = 0, token: 
         while not server.stop.wait(1.0):
             if server.page_gone() and not session.import_away():
                 ui.info("The page was closed - stopping.")
+                break
+            if unvisited and server.last_contact is None and time.monotonic() - began > unvisited:
+                ui.info(f"Nobody opened the page in {unvisited:.0f} s - stopping.")
                 break
         if session.restart_requested:
             session.restart_to = (server.port, token)

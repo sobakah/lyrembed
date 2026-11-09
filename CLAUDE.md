@@ -18,7 +18,7 @@ lyrembed/
   web.py                 The page's local HTTP server and JSON API (the default without --auto)
   batch.py               Batch mode (--auto): prints core's steps in the terminal
   static/                The page: index.html, app.js, style.css, lrc.js (editor's LRC logic),
-                         base.css and icons.js (shared with cdimport), icon.svg, logo.svg,
+                         base.css and icons.js (shared with cdport), icon.svg, logo.svg,
                          vendor/preact-htm.js
   providers.py           LRCLIB / NetEase / QQ Music / Megalobiz / syncedlyrics, ranking, search cache
   tagging.py             Metadata and cover reading, writing, mtime-keyed cache
@@ -27,6 +27,7 @@ lyrembed/
   selfupdate.py          A newer lyrembed: release tags via git, the pipx command, the restart
   config.py              Defaults, setting explanations, config merging, alias loading
   desktop.py             The app-menu entry (freedesktop.org), written on request
+  dbus_service.py        The D-Bus interface for Gatefold (--dbus) and its service file
   aliases.json           Built-in artist alias groups (package data)
 tests/test_lyrembed.py     pytest suite
 tests/lrc.test.mjs         Node tests for static/lrc.js (run by the pytest suite when node exists)
@@ -36,8 +37,8 @@ tests/lrc.test.mjs         Node tests for static/lrc.js (run by the pytest suite
 
 ```bash
 pip install -e ".[all,dev]"     # all optional backends plus pytest/pyflakes
-pytest -q                       # 225 tests; 26 skip without the optional backends,
-                                # 2 more without ffmpeg or node
+pytest -q                       # 251 tests; 26 skip without the optional backends,
+                                # 4 more without jeepney, 2 more without ffmpeg or node
 python -m pyflakes lyrembed/ tests/ run.py
 python run.py --version
 python run.py ~/Music/Album --auto --dry-run --color never
@@ -244,29 +245,38 @@ valid JSON is never overwritten. Values go through the checks
 discarded at the next start. `api.user_agent` is not offered: a saved copy
 would freeze the version.
 
-**Another program's page can hand lyrembed the tab** (cdimport, from 0.9.0):
+**cdport was called cdimport** before its 1.3.0 (2026-11-09). It still
+installs a `cdimport` command, and started under that name it prints its
+lines with the old name; a cdimport 1.2.x knows no other. lyrembed therefore
+looks for `cdport` first, then `cdimport` (`web.find_cdport`), and reads
+both names' lines (`_CDPORT_PAGE`, `_CDPORT_DONE`). The shared `base.css`
+and `icons.js` still say cdimport in their first comment, as cdport's
+copies do: change it in both or neither.
+
+**Another program's page can hand lyrembed the tab** (cdport, from 0.9.0):
 `--return-url URL --return-name NAME` replaces Quit with "Done – back to
 NAME", which ends lyrembed and sends the tab to URL. Only local addresses are
 accepted (`cli.local_page`: http, 127.0.0.1 or localhost, a port), so
-lyrembed cannot be used to send a tab elsewhere. cdimport finds lyrembed's
+lyrembed cannot be used to send a tab elsewhere. cdport finds lyrembed's
 page by the first line `serve` prints, "lyrembed is running at <url>"
-(its `web._HANDOFF`): keep that wording.
+(`web.RUNNING_LINE`; its `web._HANDOFF`, and `dbus_service._PAGE` here):
+keep that wording.
 
-**Import a CD starts cdimport the other way round** (`web.Import`): lyrembed
-runs `cdimport --web --no-browser --return-url <its page> --return-name
-lyrembed` (found by `web.find_cdimport`, only if its `--help` has
-`--return-url`), sends the tab to the address cdimport prints, and reads
-cdimport's output to the end for "cdimport finished: <folder>", which it
-then opens (`_take_imported`). The tab comes back before cdimport has
+**Import a CD starts cdport the other way round** (`web.Import`): lyrembed
+runs `cdport --web --no-browser --return-url <its page> --return-name
+lyrembed` (found by `web.find_cdport`, only if its `--help` has
+`--return-url`), sends the tab to the address cdport prints, and reads
+cdport's output to the end for "cdport finished: <folder>", which it
+then opens (`_take_imported`). The tab comes back before cdport has
 ended, so the page asks again while `importing` is true: that is until the
 output is read (`Import.running`), not until the process is gone, or the
-album in its last line is missed. While cdimport
+album in its last line is missed. While cdport
 runs, and `IMPORT_GRACE` after, lyrembed's own page does not count as
 gone (`import_away`). Not offered when lyrembed itself was opened with
 `--return-url`, so the two cannot call each other in a loop.
 
 **A newer lyrembed is found and installed from the page** (the maintainer's
-request, 2026-10-27, after picktag's `core/selfupdate.py`; cdimport has the
+request, 2026-10-27, after picktag's `core/selfupdate.py`; cdport has the
 same, copied, not imported). `selfupdate.latest` takes the highest plain
 `x.y.z` tag from `git ls-remote --tags` of the private repository: git has
 the access `pipx install` has (gh as credential helper) and never prompts
@@ -280,7 +290,7 @@ included, under the running server, so the page offers **Restart
 lyrembed** at once: `/api/update/restart` stops the server after its answer,
 and `cli._restart` `exec`s the start command with `LYREMBED_RESTART=PORT:TOKEN`
 in the environment. The new process takes that variable out at once (a
-cdimport started from its page must not see it) and listens on the same port
+cdport started from its page must not see it) and listens on the same port
 with the same token, so the tab's cookie still fits and the page only
 reloads once `/api/update` answers with the new version. A taken port gets a
 new address and a browser tab. Not while a bulk run goes on. Checked
@@ -293,10 +303,10 @@ a server that is gone (seen 2026-10-31: a broken image after Quit, unless the
 folder picker had loaded the icon before).
 
 **The token cookie's name carries the port** (`web.cookie_name`). Cookies
-belong to a host, not a port: a second lyrembed on 127.0.0.1 (cdimport's
+belong to a host, not a port: a second lyrembed on 127.0.0.1 (cdport's
 lyrics step starts one) overwrote the first one's token under one name.
 
-**lyrembed and cdimport share one look, libadwaita's** (the maintainer's
+**lyrembed and cdport share one look, libadwaita's** (the maintainer's
 request, 2026-10-31): they work together, so they look related and differ by
 accent (blue here, teal there) and small icon. `static/base.css` (tokens,
 buttons, fields, header bar, steps, status pages, toasts) and `static/icons.js`
@@ -316,7 +326,7 @@ it, replace the file and the checksum, nothing else. Lyrics are only ever
 rendered as text, never as markup.
 
 **`cli.main` decides the exit code in one place**: 0 done or quit, 1 batch
-failures, 2 unusable input, 130 Ctrl+C. Programs such as cdimport start
+failures, 2 unusable input, 130 Ctrl+C. Programs such as cdport start
 `lyrembed DIR` and wait for it, so the page must end the process: Quit,
 closing the tab, or Ctrl+C.
 
@@ -339,6 +349,82 @@ folder called "romanize". The layout is always "below"
 The `han_hint` only settles undecided Han runs (`_asian_languages`), as
 Kana would, and never outweighs Chinese evidence: a first version that
 turned every "zh" into "ja" romanized `我爱你` in Rōmaji.
+
+**The D-Bus interface is Gatefold's way in from a Flatpak** (the
+maintainer's request, 2026-11-09, after cdport 1.3.0's; Gatefold's
+CONCEPT.md §12 "The companion tools as Flatpaks"). A sandbox can neither
+start host programs nor read `~/.config/lyrembed`, so everything Gatefold
+did through the command line and the config has a call (`dbus_service`;
+the calls are in its docstring and the README). The loop, the service file
+and the safety rules are cdport's, copied, not imported:
+- Bus name `io.github.sobakah.lyrembed` (the app ID lyrembed would have as
+  a Flatpak), object `/io/github/sobakah/lyrembed`, interface
+  `io.github.sobakah.lyrembed1` (a change that breaks callers gets a
+  `lyrembed2` next to it; `GetInfo`'s `InterfaceVersion`).
+- `Romanize` runs in the service, in one worker thread, answering later
+  (the loop stays free; pykakasi loads once). Like `romanize --stdio` it
+  uses the built-in settings, not the user's file: both must give the
+  same answer. `""` stands for `null`, which D-Bus lacks. The service ends
+  after `IDLE_EXIT` (5 min, as long as Gatefold kept its stdio helper) so
+  an old version does not stay after a pipx update.
+- `OpenPage` and `FetchLyrics` start child processes of the same lyrembed
+  (`desktop.launch_command`) in their own session, with the home folder as
+  working folder (no folder: the picker in the music folder). A page run
+  gets `--color never` (with the config's `"color": "always"` the address
+  line came wrapped in escape codes and never matched `_PAGE`) and
+  `--unvisited-timeout 600` (hidden; `web.serve`'s `unvisited`), so a page
+  nobody opened does not keep the service until logout. The same folder's
+  page is shown again, not started twice; a page and a search, or two
+  searches, never start on one folder (or one inside the other) at once
+  (`Busy`). That compares the folder a run was started on: the user may
+  switch folders on a page, which the service does not see. A guard, not a
+  lock (two lyrembeds from the command line have none either).
+- **No way out of a sandbox** (found in the code review before 1.2.0): the
+  page's address never goes over the bus. Its token opens the page's whole
+  API (any folder, bulk runs, settings, `pipx`, starting cdport), and a
+  Flatpak shares the host's 127.0.0.1. So the service opens the browser
+  itself (`webbrowser.open`, in a thread: `OpenPage` and `ShowPage` answer
+  whether it worked) and `Runs` lists no addresses. cdport 1.3.0 still
+  hands its address out. No call runs a command. A page may open any
+  existing absolute folder (the user decides on it what is written, as
+  with its folder picker); `FetchLyrics`, which writes unattended, only
+  inside the music folder (`dbus_service.music_folder`: never the home
+  folder `core.music_folder` falls back to), which a Flatpak with
+  `xdg-music` sees anyway. Options are checked by name and type; `--dbus`
+  refuses other options, which it would ignore.
+- `Stop` sends SIGINT once per run (a second one would cut off the first's
+  stopping). A run that ends is always signalled, also one whose page
+  never came up. The service never ends while runs are going (`_outlive_runs`):
+  under dbus-broker it is a systemd unit whose end kills its cgroup. Ctrl+C
+  on a service started by hand is passed on to the runs, exit code 130. A
+  call failing with anything but a `ServiceError`, or a reply jeepney
+  cannot serialise (`_send`: a uint32 out of range), is answered with
+  `org.freedesktop.DBus.Error.Failed`, its traceback on stderr.
+- Idle, the loop sends `ReleaseName` and ends only once that is answered
+  and nothing came meanwhile: a call the bus routed here just before would
+  otherwise go unanswered; after the release the bus starts a new service.
+- jeepney: `receive`/`send` only after start-up, and `RequestName` waited
+  for by hand (`_request_name`): `send_and_get_reply` drops every message
+  that is not its reply, and the call that made the bus start lyrembed can
+  come before that reply. An activated service answers on
+  `DBUS_STARTER_ADDRESS`. jeepney is a dependency, imported only for
+  `--dbus` and the bus reload. The method signatures come from
+  `INTROSPECTION` (`_SIGNATURES`): declare a call there once.
+- `--install-dbus-service` writes `~/.local/share/dbus-1/services/
+  io.github.sobakah.lyrembed.service` (`Exec=` the launcher plus `--dbus`)
+  and asks the bus to `ReloadConfig` (dbus-broker, Fedora's, needs that).
+- Checked 2026-11-09: a private dbus-daemon starts lyrembed through the
+  service file (`test_dbus_on_a_real_bus_started_by_the_bus`, skipped
+  without jeepney or dbus-daemon; session.conf's `<allow eavesdrop="true"/>`
+  is needed, else replies are rejected and the client hangs); on the
+  maintainer's dbus-broker session bus with `--dbus` started by hand and
+  gdbus (every call, a generated track's page loaded, Stop twice giving
+  one `Finished(1, 130)`, `/etc` refused, Ctrl+C ending the page too;
+  after the review again with a stand-in `BROWSER`: OpenPage and ShowPage
+  handed it the address, idle exit released the name).
+  Activation by dbus-broker itself, with the service file installed, is
+  not checked yet. Gatefold does not use the interface yet; that change is
+  in Gatefold's repository.
 
 **Retired settings get a note, not "unknown key".** `config._RETIRED` lists
 the settings of the terminal menus (`default_editor`, `preview_lines`,

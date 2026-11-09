@@ -14,7 +14,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 PROJECT_URL = "https://github.com/sobakah/lyrembed"
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -261,8 +261,10 @@ def _merged_aliases(user: tuple[tuple[str, ...], ...]) -> tuple[tuple[str, ...],
     return tuple(tuple(g) for g in merged if len(g) > 1)
 
 
-def alias_groups() -> tuple[tuple[str, ...], ...]:
-    user = CONFIG.get("aliases", [])
+def alias_groups(cfg: dict | None = None) -> tuple[tuple[str, ...], ...]:
+    """The built-in groups merged with the user's, from *cfg* or the
+    config in effect (the D-Bus service reads the file anew at each call)."""
+    user = (CONFIG if cfg is None else cfg).get("aliases", [])
     if not isinstance(user, list):
         user = []
     user_groups = tuple(

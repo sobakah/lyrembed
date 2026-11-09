@@ -3,6 +3,16 @@
 All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0] — 2026-11-09
+
+### Added
+
+- **A D-Bus interface for Gatefold and other programs**, also from inside a Flatpak, which can neither start lyrembed nor read its settings. `lyrembed --install-dbus-service` lets the session bus start lyrembed when a program calls `io.github.sobakah.lyrembed`: to romanize lyrics, read the settings and artist aliases, open lyrembed's page on a folder, or fetch lyrics for a folder in your music folder, and to hear when that ended. It has no call that runs a command, and lyrembed opens its page in the browser itself, so a sandboxed program never gets the page's secret address. See [D-Bus](README.md#d-bus-for-gatefold-and-other-programs). It needs the Python package `jeepney`, which pipx now installs with lyrembed.
+
+### Changed
+
+- **cdimport is now called cdport.** **Import a CD** looks for `cdport` first and still works with cdimport.
+
 ## [1.1.1] — 2026-11-08
 
 ### Added
@@ -750,6 +760,7 @@ LRCLIB, NetEase and `syncedlyrics`; confidence-aware ranking; batch mode with
   time. Traditional Chinese resolves less often than simplified for this
   reason.
 
+[1.2.0]: https://github.com/sobakah/lyrembed/releases/tag/1.2.0
 [1.1.1]: https://github.com/sobakah/lyrembed/releases/tag/1.1.1
 [1.1.0]: https://github.com/sobakah/lyrembed/releases/tag/1.1.0
 [1.0.1]: https://github.com/sobakah/lyrembed/releases/tag/1.0.1

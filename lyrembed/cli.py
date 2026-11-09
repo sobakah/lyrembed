@@ -37,14 +37,24 @@ def build_parser() -> argparse.ArgumentParser:
                          help="print the page's address instead of opening it")
     browser.add_argument("--return-url", metavar="URL",
                          help="a 'Done' button on the page ends lyrembed and goes back to this local address "
-                              "(another program's page, such as cdimport's)")
+                              "(another program's page, such as cdport's)")
     browser.add_argument("--return-name", metavar="NAME", default="",
                          help="with --return-url, the name on that button (default: 'the previous page')")
+    # For dbus_service's page runs: end when nobody opens the page.
+    browser.add_argument("--unvisited-timeout", type=float, default=0, metavar="SECONDS", help=argparse.SUPPRESS)
     desktop_entry = browser.add_mutually_exclusive_group()
     desktop_entry.add_argument("--install-desktop-entry", action="store_true",
                                help="add lyrembed to the app menu (Linux/BSD), starting this lyrembed, then exit")
     desktop_entry.add_argument("--remove-desktop-entry", action="store_true",
                                help="remove lyrembed from the app menu, then exit")
+
+    bus = parser.add_argument_group("D-Bus (for Gatefold and other programs, also from a Flatpak)")
+    service = bus.add_mutually_exclusive_group()
+    service.add_argument("--install-dbus-service", action="store_true",
+                         help="let the session bus start this lyrembed when a program calls it, then exit")
+    service.add_argument("--remove-dbus-service", action="store_true", help="undo --install-dbus-service, then exit")
+    service.add_argument("--dbus", action="store_true",
+                         help="serve the D-Bus interface until idle (what the bus starts)")
 
     batch = parser.add_argument_group("batch mode")
     batch.add_argument("--auto", action="store_true", help="tag every track with a confident match, without prompting")
@@ -81,10 +91,22 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         parser.error("--no-browser and --auto exclude each other: batch mode runs without a page")
     if args.return_url and args.auto:
         parser.error("--return-url and --auto exclude each other: batch mode runs without a page")
+    if args.unvisited_timeout and args.auto:
+        parser.error("--unvisited-timeout and --auto exclude each other: batch mode runs without a page")
+    if args.unvisited_timeout < 0:
+        parser.error("--unvisited-timeout must be 0 (wait for ever) or a positive number of seconds")
     if args.return_name and not args.return_url:
         parser.error("--return-name only applies together with --return-url")
     if args.return_url and not local_page(args.return_url):
         parser.error("--return-url must be a page on this computer, such as http://127.0.0.1:8000/")
+    if args.dbus:
+        # The service reads the config anew at each call; a path or a mode
+        # given with it would be silently ignored.
+        defaults = vars(parser.parse_args([]))
+        given = [key for key, value in vars(args).items()
+                 if key not in ("dbus", "verbose") and value != defaults[key]]
+        if given:
+            parser.error("--dbus takes no other options: it serves the D-Bus interface until idle")
     if args.max_files is not None and args.max_files < 0:
         parser.error("--max-files must be 0 (unlimited) or a positive number")
     return args
@@ -123,7 +145,7 @@ def print_aliases() -> None:
 
 # After an update, the new lyrembed takes over the old one's page: its port
 # and token come in this variable ("PORT:TOKEN"), which nothing else sees
-# (it is removed at once, so a cdimport started from the page does not get it).
+# (it is removed at once, so a cdport started from the page does not get it).
 RESTART_ENV = "LYREMBED_RESTART"
 
 
@@ -133,7 +155,7 @@ def _take_restart() -> tuple[int, str] | None:
 
 
 def _serve_web(path: Path, cache: MetadataCache, open_browser: bool, explicit: bool = True,
-               back: tuple[str, str] | None = None) -> int:
+               back: tuple[str, str] | None = None, unvisited: float = 0) -> int:
     """Open the page on *path*; a folder that cannot be used is no reason not
     to start, the page asks for another one. Started without a folder in the
     home folder - as the app menu does - it just asks, without a warning."""
@@ -150,9 +172,9 @@ def _serve_web(path: Path, cache: MetadataCache, open_browser: bool, explicit: b
         session.return_url, session.return_name = back
     restart = _take_restart()
     if restart:
-        code = web.serve(session, open_browser=False, port=restart[0], token=restart[1])
+        code = web.serve(session, open_browser=False, port=restart[0], token=restart[1], unvisited=unvisited)
     else:
-        code = web.serve(session, open_browser=open_browser)
+        code = web.serve(session, open_browser=open_browser, unvisited=unvisited)
     if session.restart_to:
         _restart(*session.restart_to)
     return code
@@ -189,6 +211,26 @@ def _desktop_entry(install: bool) -> int:
             ui.success("Removed: " + ", ".join(str(p) for p in removed) if removed else "There was no app-menu entry.")
     except desktop.DesktopError as exc:
         ui.error(str(exc))
+        return 2
+    return 0
+
+
+def _dbus_service(install: bool) -> int:
+    from . import dbus_service
+
+    try:
+        if install:
+            path, command, unreloaded = dbus_service.install_service_file()
+            ui.success(f"The session bus starts lyrembed for {dbus_service.BUS_NAME}: {path}")
+            ui.info(f"It starts: {' '.join(command)} --dbus")
+            if unreloaded:
+                ui.warn(f"Could not tell the bus to read it ({unreloaded}); it does at the next login.")
+            ui.info("Run this again after installing lyrembed elsewhere (pipx, another checkout).")
+        else:
+            removed = dbus_service.remove_service_file()
+            ui.success(f"Removed: {removed}" if removed else "There was no D-Bus service file.")
+    except OSError as exc:
+        ui.error(f"Could not {'write' if install else 'remove'} the D-Bus service file: {exc}")
         return 2
     return 0
 
@@ -246,6 +288,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     args = parse_args(argv)
     configure_logging(args.verbose)
+    if args.dbus:
+        from . import dbus_service
+
+        return dbus_service.serve()
 
     try:
         loaded, warnings = config.load_config(args.config)
@@ -275,6 +321,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.install_desktop_entry or args.remove_desktop_entry:
         return _desktop_entry(install=args.install_desktop_entry)
+    if args.install_dbus_service or args.remove_dbus_service:
+        return _dbus_service(install=args.install_dbus_service)
     unsupported = sorted(
         {str(e).lower() for e in config.get("settings", "supported_extensions") or []}
         - set(tagging.SUPPORTED_EXTENSIONS)
@@ -289,7 +337,8 @@ def main(argv: list[str] | None = None) -> int:
         if not args.auto:
             return _serve_web(Path(args.path or "."), cache, open_browser=not args.no_browser,
                               explicit=args.path is not None,
-                              back=(args.return_url, args.return_name) if args.return_url else None)
+                              back=(args.return_url, args.return_name) if args.return_url else None,
+                              unvisited=args.unvisited_timeout)
         resolved = batch.open_music_directory(Path(args.path or "."))
         if resolved is None:
             # Batch mode may run from cron: it never asks for another folder.

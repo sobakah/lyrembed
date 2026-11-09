@@ -2536,7 +2536,7 @@ def test_page_exit_codes(tmp_path, monkeypatch, cfg):
     monkeypatch.setattr(config, "load_config", lambda path=None: (cfg, []))
     _make_flac(tmp_path / "a.flac")
     started = []
-    monkeypatch.setattr(web, "serve", lambda session, open_browser=True, port=0: started.append(open_browser) or 0)
+    monkeypatch.setattr(web, "serve", lambda session, open_browser=True, port=0, unvisited=0: started.append(open_browser) or 0)
     assert cli.main([str(tmp_path), "--no-browser"]) == 0 and started == [False]
 
     def interrupt(*args, **kwargs):
@@ -2611,7 +2611,7 @@ def test_started_from_the_menu_the_page_asks_without_a_warning(tmp_path, monkeyp
     monkeypatch.chdir(home)
     monkeypatch.setattr(config, "load_config", lambda path=None: (cfg, []))
     problems = []
-    monkeypatch.setattr(web, "serve", lambda session, open_browser=True, port=0: problems.append(session.problem) or 0)
+    monkeypatch.setattr(web, "serve", lambda session, open_browser=True, port=0, unvisited=0: problems.append(session.problem) or 0)
     assert cli.main([]) == 0                    # the app menu gives no folder
     assert cli.main([str(home)]) == 0           # typed on purpose: say why it is not used
     assert problems[0] == "" and "home folder" in problems[1]
@@ -2647,29 +2647,30 @@ def test_the_done_button_only_leads_to_a_page_on_this_computer(capsys):
     for url in ("https://127.0.0.1:41877/", "http://evil.example:80/", "http://127.0.0.1/", "javascript:alert(1)",
                 "http://127.0.0.1.evil.example:80/"):
         assert not cli.local_page(url), url
-    for argv in (["--return-url", "http://evil.example:80/"], ["--return-name", "cdimport"],
+    for argv in (["--return-url", "http://evil.example:80/"], ["--return-name", "cdport"],
                  ["--auto", "--return-url", "http://127.0.0.1:1/"]):
         with pytest.raises(SystemExit):
             cli.parse_args(argv)
-    args = cli.parse_args(["--return-url", "http://127.0.0.1:41877/", "--return-name", "cdimport"])
-    assert (args.return_url, args.return_name) == ("http://127.0.0.1:41877/", "cdimport")
+    args = cli.parse_args(["--return-url", "http://127.0.0.1:41877/", "--return-name", "cdport"])
+    assert (args.return_url, args.return_name) == ("http://127.0.0.1:41877/", "cdport")
 
 
 def test_the_page_knows_where_done_goes(tmp_path, monkeypatch, cfg):
     _make_flac(tmp_path / "a.flac")
     monkeypatch.setattr(config, "load_config", lambda path=None: (cfg, []))
     seen = []
-    monkeypatch.setattr(web, "serve", lambda session, open_browser=True, port=0: seen.append(session.library()) or 0)
-    assert cli.main([str(tmp_path), "--no-browser", "--return-url", "http://127.0.0.1:41877/", "--return-name", "cdimport"]) == 0
+    monkeypatch.setattr(web, "serve", lambda session, open_browser=True, port=0, unvisited=0: seen.append(session.library()) or 0)
+    assert cli.main([str(tmp_path), "--no-browser", "--return-url", "http://127.0.0.1:41877/", "--return-name", "cdport"]) == 0
     assert cli.main([str(tmp_path), "--no-browser"]) == 0
-    assert (seen[0]["returnUrl"], seen[0]["returnName"]) == ("http://127.0.0.1:41877/", "cdimport")
+    assert (seen[0]["returnUrl"], seen[0]["returnName"]) == ("http://127.0.0.1:41877/", "cdport")
     assert seen[1]["returnUrl"] == ""
 
 
-# --- importing a CD with cdimport -------------------------------------------------
-def _fake_cdimport(folder: Path, help_text: str, run_lines: list[str], pause: float = 0.0) -> Path:
-    """A 'cdimport' that prints help or, when run, the given lines."""
-    script = folder / "cdimport"
+# --- importing a CD with cdport (called cdimport before 1.3.0) ------------------
+def _fake_cdport(folder: Path, help_text: str, run_lines: list[str], pause: float = 0.0,
+                 name: str = "cdport") -> Path:
+    """A 'cdport' that prints help or, when run, the given lines."""
+    script = folder / name
     lines = ";".join(f"print({line!r}, flush=True)" for line in run_lines)
     script.write_text(f"#!{sys.executable}\nimport sys, time\n"
                       f"if '--help' in sys.argv: print({help_text!r}); sys.exit(0)\n"
@@ -2680,24 +2681,35 @@ def _fake_cdimport(folder: Path, help_text: str, run_lines: list[str], pause: fl
     return script
 
 
-def test_only_a_cdimport_that_can_lead_back_is_offered(tmp_path, monkeypatch):
+def test_only_a_cdport_that_can_lead_back_is_offered(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("PATH", str(tmp_path))
-    assert web.find_cdimport() is None
-    _fake_cdimport(tmp_path, "  --web  --no-browser", [])                       # cdimport 0.5
-    assert web.find_cdimport() is None
-    script = _fake_cdimport(tmp_path, "  --web  --return-url URL", [])
-    assert web.find_cdimport() == str(script)
+    assert web.find_cdport() is None
+    _fake_cdport(tmp_path, "  --web  --no-browser", [], name="cdimport")         # cdimport 0.5
+    assert web.find_cdport() is None
+    old = _fake_cdport(tmp_path, "  --web  --return-url URL", [], name="cdimport")
+    assert web.find_cdport() == str(old)
+    # cdport installs a cdimport command too; the new name comes first.
+    script = _fake_cdport(tmp_path, "  --web  --return-url URL", [])
+    assert web.find_cdport() == str(script)
+
+
+def test_both_names_lines_are_read():
+    for name in ("cdport", "cdimport"):
+        page = web._CDPORT_PAGE.search(f"{name} is running at http://127.0.0.1:5555/?token=a_B-9")
+        assert page.group(1) == "http://127.0.0.1:5555/?token=a_B-9"
+        assert web._CDPORT_DONE.match(f"{name} finished: /m/A B/Album: Live").group(1) == "/m/A B/Album: Live"
+    assert not web._CDPORT_PAGE.search("lyrembed is running at http://127.0.0.1:1/?token=x")
 
 
 def test_an_import_opens_the_album_it_brought(cfg, tmp_path, monkeypatch):
     album = tmp_path / "lib" / "Night Lines"
     album.mkdir(parents=True)
     _make_flac(album / "01.flac")
-    script = _fake_cdimport(tmp_path, "--return-url", ["cdimport is running at http://127.0.0.1:5555/?token=abc",
-                                                       f"cdimport finished: {album}"], pause=0.3)
+    script = _fake_cdport(tmp_path, "--return-url", ["cdport is running at http://127.0.0.1:5555/?token=abc",
+                                                     f"cdport finished: {album}"], pause=0.3)
     session = web.WebSession(None, [], tagging.MetadataCache())
-    session._cdimport = (True, str(script))
+    session._cdport = (True, str(script))
     with pytest.raises(web.ApiError):
         session.start_import()                                                  # no page address yet
     session.page_url = "http://127.0.0.1:41000/"
@@ -2718,16 +2730,16 @@ def test_an_import_opens_the_album_it_brought(cfg, tmp_path, monkeypatch):
     assert not session.import_away()
 
 
-def test_import_is_not_offered_to_a_page_cdimport_opened(cfg, tmp_path):
+def test_import_is_not_offered_to_a_page_cdport_opened(cfg, tmp_path):
     session = web.WebSession(None, [], tagging.MetadataCache())
-    session._cdimport = (True, "/usr/bin/cdimport")
-    assert session.library()["cdimport"] is True
+    session._cdport = (True, "/usr/bin/cdport")
+    assert session.library()["cdport"] is True
     session.return_url = "http://127.0.0.1:41877/"
-    assert session.library()["cdimport"] is False                              # no loop between the two
+    assert session.library()["cdport"] is False                              # no loop between the two
 
 
 def test_two_pages_on_one_host_keep_their_own_cookie(web_server):
-    # Cookies belong to the host, not the port: a second lyrembed (cdimport's
+    # Cookies belong to the host, not the port: a second lyrembed (cdport's
     # lyrics step starts one) overwrote the first one's token under one name.
     other = web.cookie_name(web_server.port + 1)
     assert other != web.cookie_name(web_server.port)
@@ -2948,7 +2960,7 @@ def test_the_page_looks_for_updates_at_every_start(cfg, tmp_path, monkeypatch):
     session.updates.check(quiet=True)
     _wait_for(session.updates, "current")
     assert web.wants_update_check(web.WebSession(tmp_path, [], tagging.MetadataCache()))   # again at once
-    session.return_url = "http://127.0.0.1:9/"            # opened by cdimport: it doesn't look
+    session.return_url = "http://127.0.0.1:9/"            # opened by cdport: it doesn't look
     assert not web.wants_update_check(session)
 
 
@@ -3101,7 +3113,7 @@ def test_a_rate_limit_is_waited_out_after_a_match_from_another_provider(cfg, tmp
 
 def test_an_import_counts_as_running_until_its_output_is_read(cfg, tmp_path):
     script = tmp_path / "ends_at_once.py"
-    script.write_text("print('cdimport finished: /album', flush=True)\n", encoding="utf-8")
+    script.write_text("print('cdport finished: /album', flush=True)\n", encoding="utf-8")
     release = threading.Event()
 
     class LateReader(web.Import):
@@ -3270,3 +3282,502 @@ def test_a_japanese_hint_reads_kanji_only_lyrics_as_japanese():
     chinese, language, _ = core.romanize_for_display("[00:01.00]我爱你", "ja")
     assert language == "zh" and "ài" in chinese
 
+
+
+# --- the D-Bus interface, for Gatefold ------------------------------------------
+import itertools  # noqa: E402
+import signal  # noqa: E402
+
+from lyrembed import dbus_service  # noqa: E402
+
+
+class FakeRun:
+    """A run's process: prints *lines*, then runs until released (or
+    stopped, as with Ctrl+C: 130)."""
+
+    def __init__(self, lines=(), code=0, hold=True):
+        self.lines, self.code, self.signals = list(lines), code, []
+        self.release = threading.Event()
+        if not hold:
+            self.release.set()
+        self.stdout = self._out()
+
+    def _out(self):
+        yield from (line + "\n" for line in self.lines)
+        self.release.wait(10)
+
+    def wait(self):
+        return self.code
+
+    def send_signal(self, sig):
+        self.signals.append(sig)
+        self.code = 130
+        self.release.set()
+
+
+PAGE_URL = "http://127.0.0.1:43210/?token=abc_DEF-1"
+PAGE_LINE = web.RUNNING_LINE.format(url=PAGE_URL)
+
+
+def bus_service(*processes, clock=None, opens=True):
+    """A service with stand-in processes and browser; .started holds the
+    commands, .opened the addresses given to the browser."""
+    started, opened = [], []
+
+    def spawn(command):
+        started.append(command)
+        return processes[len(started) - 1]
+
+    def open_url(url):
+        opened.append(url)
+        return opens
+    service = dbus_service.Service(spawn=spawn, open_url=open_url, **({"clock": clock} if clock else {}))
+    service.started, service.opened = started, opened
+    return service
+
+
+def drain(service, count=1, timeout=5.0):
+    """What the service sends, once *count* items came (or the time is up)."""
+    out, deadline = [], time.monotonic() + timeout
+    while len(out) < count and time.monotonic() < deadline:
+        out += service.outgoing()
+        time.sleep(0.01)
+    return out
+
+
+@pytest.fixture
+def music(tmp_path, monkeypatch):
+    folder = tmp_path / "Musik"
+    (folder / "Artist" / "Album").mkdir(parents=True)
+    monkeypatch.setattr(core, "music_folder", lambda: folder)
+    return folder
+
+
+def test_dbus_info_says_what_gatefold_read_from_the_config(config_home, music):
+    config_home.parent.mkdir(parents=True)
+    config_home.write_text('{"settings": {"romanization_layout": "below", "max_file_count": 400}}', encoding="utf-8")
+    service = bus_service()
+    signature, (info,) = service.call("GetInfo", "", (), None)
+    assert signature == "a{sv}" and info["Version"] == ("s", config.__version__)
+    assert info["InterfaceVersion"] == ("u", 1) and info["MusicFolder"] == ("s", str(music.resolve()))
+    assert info["RomanizationLayout"] == ("s", "below") and info["MaxFileCount"] == ("u", 400)
+    assert info["Romanizes"][0] == "as" and set(info["Romanizes"][1]) <= {"ko", "ja", "zh", "any"}
+
+
+def test_dbus_info_fits_its_types(config_home, monkeypatch):
+    # A uint32 cannot carry more; jeepney would fail to send the reply.
+    config_home.parent.mkdir(parents=True)
+    config_home.write_text('{"settings": {"max_file_count": 5000000000}}', encoding="utf-8")
+    monkeypatch.setattr(core, "music_folder", Path.home)          # no music folder: falls back to home
+    info = bus_service().info()
+    assert info["MaxFileCount"] == ("u", 2**32 - 1) and info["MusicFolder"] == ("s", "")
+
+
+def test_dbus_signatures_come_from_the_introspection_data():
+    assert dbus_service._SIGNATURES == {"GetInfo": "", "ArtistAliases": "", "Romanize": "ss", "OpenPage": "s",
+                                        "ShowPage": "s", "FetchLyrics": "sa{sv}", "Runs": "", "Stop": "s"}
+
+
+def test_dbus_aliases_are_the_ones_in_effect(config_home):
+    config_home.parent.mkdir(parents=True)
+    config_home.write_text('{"aliases": [["Night Owls", "夜猫"]]}', encoding="utf-8")
+    signature, (groups,) = bus_service().call("ArtistAliases", "", (), None)
+    assert signature == "aas" and ["Night Owls", "夜猫"] in groups
+    assert len(groups) == len(config.builtin_aliases()) + 1
+
+
+def test_dbus_romanize_answers_as_romanize_stdio_does():
+    service = bus_service()
+    assert service.call("Romanize", "ss", ("[00:01.00]Hello", ""), "latin") is None   # answered by the romanizer
+    expected = [("return", "latin", "sss", ("", "", "already Latin"))]
+    if text.HAS_KOREAN:
+        service.call("Romanize", "ss", ("[00:01.00]안녕", "ja"), "korean")
+        lyrics, language, _ = core.romanize_for_display("[00:01.00]안녕", "ja")
+        expected.append(("return", "korean", "sss", (lyrics, language, "")))
+    assert drain(service, len(expected)) == expected and not service.busy()
+    for hint, lyrics in (("ko", "x"), ("", "x" * (dbus_service.MAX_LYRICS + 1))):
+        with pytest.raises(dbus_service.ServiceError) as refused:
+            service.call("Romanize", "ss", (lyrics, hint), "call")
+        assert refused.value.name.endswith("InvalidArgs")
+
+
+def test_dbus_page_opens_in_the_browser_and_its_address_stays_here(tmp_path):
+    # The token opens the page's whole API: a sandboxed caller must not get it.
+    process = FakeRun([PAGE_LINE, "Open that address in your browser."])
+    service = bus_service(process)
+    assert service.call("OpenPage", "s", (str(tmp_path),), "the call") is None
+    assert service.started[0][-6:] == [str(tmp_path.resolve()), "--no-browser", "--color", "never",
+                                       "--unvisited-timeout", "600"]
+    assert drain(service) == [("return", "the call", "sb", ("1", True))] and service.opened == [PAGE_URL]
+    assert service.call("Runs", "", (), None) == ("a(sss)", ([("1", "page", str(tmp_path.resolve()))],))
+    # The same folder again: the page already open is shown, not a second one.
+    assert service.call("OpenPage", "s", (str(tmp_path),), "again") is None
+    assert drain(service) == [("return", "again", "sb", ("1", True))] and len(service.started) == 1
+    assert service.call("ShowPage", "s", ("1",), "show") is None
+    assert drain(service) == [("return", "show", "b", (True,))] and service.opened == [PAGE_URL] * 3
+    process.release.set()
+    assert drain(service) == [("signal", "Finished", "si", ("1", 0))]
+    assert service.runs == {} and not service.busy()
+    with pytest.raises(dbus_service.ServiceError) as gone:
+        service.call("ShowPage", "s", ("1",), "show")
+    assert gone.value.name.endswith("UnknownRun")
+
+
+def test_dbus_page_says_when_no_browser_opened(tmp_path):
+    service = bus_service(FakeRun([PAGE_LINE]), opens=False)
+    service.call("OpenPage", "s", ("",), "call")
+    assert service.started[0][-5:] == ["--no-browser", "--color", "never", "--unvisited-timeout", "600"]
+    assert drain(service) == [("return", "call", "sb", ("1", False))]
+
+
+def test_dbus_show_page_needs_a_page_that_is_up(tmp_path, music):
+    service = bus_service(FakeRun(), FakeRun())
+    (tmp_path / "elsewhere").mkdir()
+    service.call("OpenPage", "s", (str(tmp_path / "elsewhere"),), "call")
+    service.call("FetchLyrics", "sa{sv}", (str(music / "Artist" / "Album"), {}), "call")
+    for run, error in (("1", "NotUp"), ("2", "UnknownRun")):
+        with pytest.raises(dbus_service.ServiceError) as refused:
+            service.call("ShowPage", "s", (run,), "show")
+        assert refused.value.name.endswith(error)
+
+
+def test_dbus_fetches_lyrics_only_inside_the_music_folder(tmp_path, music):
+    album = music / "Artist" / "Album"
+    process = FakeRun(["Searching...", PAGE_LINE])          # batch output is not a page
+    service = bus_service(process, FakeRun())
+    for elsewhere, error in ((str(tmp_path), "NotInMusicFolder"), ("/etc", "NotInMusicFolder"),
+                             (str(album / ".." / ".." / ".."), "NotInMusicFolder"),
+                             ("Artist/Album", "InvalidArgs"), (str(music / "Nothing"), "NoFolder")):
+        with pytest.raises(dbus_service.ServiceError) as refused:
+            service.call("FetchLyrics", "sa{sv}", (elsewhere, {}), "call")
+        assert refused.value.name.endswith(error), elsewhere
+    assert service.call("FetchLyrics", "sa{sv}", (str(album), {"Romanize": ("b", True)}), "call") == ("s", ("1",))
+    assert service.started[0][-5:] == [str(album.resolve()), "--auto", "--color", "never", "--romanize"]
+    with pytest.raises(dbus_service.ServiceError) as busy:           # nor a page on it meanwhile
+        service.call("OpenPage", "s", (str(album),), "call")
+    assert busy.value.name.endswith("Busy")
+    with pytest.raises(dbus_service.ServiceError) as busy:
+        service.call("FetchLyrics", "sa{sv}", (str(music / "Artist"), {}), "call")
+    assert busy.value.name.endswith("Busy") and len(service.started) == 1
+    assert service.call("Runs", "", (), None) == ("a(sss)", ([("1", "fetch", str(album.resolve()))],))
+    process.release.set()
+    assert drain(service) == [("signal", "Finished", "si", ("1", 0))] and service.opened == []
+
+
+def test_dbus_fetches_nothing_without_a_music_folder(tmp_path, monkeypatch):
+    # core.music_folder falls back to the home folder: far too wide.
+    album = Path.home() / "Album-that-is-not-there"
+    monkeypatch.setattr(core, "music_folder", Path.home)
+    monkeypatch.setattr(dbus_service.Service, "_folder", staticmethod(lambda folder: album))
+    with pytest.raises(dbus_service.ServiceError) as refused:
+        bus_service().call("FetchLyrics", "sa{sv}", (str(album), {}), "call")
+    assert refused.value.name.endswith("NotInMusicFolder") and "no music folder" in str(refused.value)
+
+
+def test_dbus_fetch_refuses_options_it_does_not_know(music):
+    service = bus_service()
+    album = str(music / "Artist" / "Album")
+    for options in ({"Command": ("s", "rm")}, {"Romanize": ("s", "yes")}, {"Overwrite": ("b", True)}):
+        with pytest.raises(dbus_service.ServiceError) as refused:
+            service.call("FetchLyrics", "sa{sv}", (album, options), "call")
+        assert refused.value.name.endswith("InvalidArgs")
+    with pytest.raises(dbus_service.ServiceError) as wrong:
+        service.call("Stop", "", (), None)
+    assert wrong.value.name.endswith("InvalidArgs")
+    with pytest.raises(dbus_service.ServiceError) as unknown:
+        service.call("Run", "s", ("ls",), None)
+    assert unknown.value.name.endswith("UnknownMethod") and service.started == []
+
+
+def test_dbus_stop_is_ctrl_c_for_the_run(music):
+    process = FakeRun()
+    service = bus_service(process)
+    service.call("FetchLyrics", "sa{sv}", (str(music / "Artist" / "Album"), {}), "call")
+    assert service.call("Stop", "s", ("1",), None) == ("", ())
+    assert service.call("Stop", "s", ("1",), None) == ("", ())    # one Ctrl+C, not two
+    assert process.signals == [signal.SIGINT]
+    assert drain(service) == [("signal", "Finished", "si", ("1", 130))]
+    with pytest.raises(dbus_service.ServiceError) as gone:
+        service.call("Stop", "s", ("1",), None)
+    assert gone.value.name.endswith("UnknownRun")
+
+
+def test_dbus_page_that_ends_before_its_address_is_an_error_and_finished(tmp_path):
+    service = bus_service(FakeRun(["Warning: ..."], code=2, hold=False))
+    service.call("OpenPage", "s", (str(tmp_path),), "call")
+    [(kind, caller, name, message), finished] = drain(service, 2)
+    assert (kind, caller) == ("error", "call") and name.endswith("Failed") and "exit code 2" in message
+    assert finished == ("signal", "Finished", "si", ("1", 2))       # for whoever saw it in Runs
+
+
+def test_dbus_gives_up_on_a_page_that_does_not_come(tmp_path):
+    now = [0.0]
+    process = FakeRun()
+    service = bus_service(process, clock=lambda: now[0])
+    service.call("OpenPage", "s", (str(tmp_path),), "call")
+    service.call("OpenPage", "s", (str(tmp_path),), "second")     # waits for the same page
+    assert service.outgoing() == []
+    now[0] = dbus_service.URL_TIMEOUT + 1
+    out = service.outgoing()
+    assert [(o[0], o[1]) for o in out] == [("error", "call"), ("error", "second")] and "not up" in out[0][3]
+    assert process.signals == [signal.SIGINT]
+    assert drain(service) == [("signal", "Finished", "si", ("1", 130))]
+
+
+def test_dbus_service_file_starts_this_lyrembed(tmp_path, monkeypatch, capsys, cfg):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(dbus_service, "_reload_bus", lambda: None)
+    shim = tmp_path / "my bin" / "lyrembed"
+    shim.parent.mkdir()
+    shim.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [str(shim)])
+    assert cli.main(["--install-dbus-service"]) == 0
+    path = tmp_path / "data" / "dbus-1" / "services" / "io.github.sobakah.lyrembed.service"
+    assert path.read_text(encoding="utf-8") == (
+        f"[D-BUS Service]\nName=io.github.sobakah.lyrembed\nExec='{shim}' --dbus\n")
+    assert cli.main(["--remove-dbus-service"]) == 0 and not path.exists()
+    assert "There was no" not in capsys.readouterr().out
+    assert cli.main(["--remove-dbus-service"]) == 0 and "There was no" in capsys.readouterr().out
+
+
+def test_dbus_takes_no_other_options():
+    assert cli.parse_args(["--dbus", "-v"]).dbus
+    for argv in (["~/Music/Album", "--dbus"], ["--dbus", "--auto"], ["--dbus", "--config", "my.json"]):
+        with pytest.raises(SystemExit):
+            cli.parse_args(argv)
+
+
+def test_dbus_runs_start_the_same_lyrembed_in_a_checkout(monkeypatch, tmp_path):
+    launcher = tmp_path / "run.py"
+    launcher.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [str(launcher), "--dbus"])
+    assert dbus_service.page_command("/m/Album") == [
+        sys.executable, str(launcher), "/m/Album", "--no-browser", "--color", "never", "--unvisited-timeout", "600"]
+    assert dbus_service.fetch_command("/m/Album", False) == [
+        sys.executable, str(launcher), "/m/Album", "--auto", "--color", "never", "--no-romanize"]
+
+
+def test_dbus_reads_exactly_the_line_the_page_prints():
+    assert dbus_service._PAGE.match(PAGE_LINE).group(1) == PAGE_URL
+    assert not dbus_service._PAGE.match("cdport is running at http://127.0.0.1:1/?token=x")
+    assert not dbus_service._PAGE.match("lyrembed is running at https://evil.example/?token=x")
+    assert dbus_service.URL_TIMEOUT < 25   # GDBus' and libdbus' default reply timeout
+
+
+def test_page_runs_print_their_address_without_colour(cfg, tmp_path, monkeypatch, capsys):
+    # A config with "color": "always" wrapped the line in escape codes, and
+    # the service never saw the page come up.
+    monkeypatch.setattr(desktop, "launch_command", lambda: ["lyrembed"])
+    cfg["settings"]["color"] = "always"
+    cfg["settings"]["check_for_updates"] = False
+    args = dbus_service.page_command(str(tmp_path))[1:]
+    monkeypatch.setattr(config, "load_config", lambda path=None: (cfg, []))
+    monkeypatch.setattr(web, "serve", lambda session, **kwargs: ui.info(web.RUNNING_LINE.format(url=PAGE_URL)) or 0)
+    assert cli.main(args) == 0
+    assert capsys.readouterr().out.splitlines()[0] == PAGE_LINE
+
+
+def test_a_page_nobody_opens_ends_when_asked_to(cfg, tmp_path, capsys):
+    session = web.WebSession(tmp_path, [], tagging.MetadataCache())
+    cfg["settings"]["check_for_updates"] = False
+    started = time.monotonic()
+    assert web.serve(session, open_browser=False, unvisited=0.2) == 0
+    assert time.monotonic() - started < 5 and "Nobody opened the page" in capsys.readouterr().out
+    for argv in (["--auto", "--unvisited-timeout", "5"], ["--unvisited-timeout", "-1"]):
+        with pytest.raises(SystemExit):
+            cli.parse_args(argv)
+
+
+class FakeBus:
+    """Just enough of a jeepney connection for dbus_service._answer: the
+    bus answers RequestName and ReleaseName; *before_reply* comes before
+    RequestName's answer, *after* before ReleaseName's; then *end*."""
+
+    def __init__(self, before_reply=(), after=(), end=OSError("the bus went away")):
+        self.outgoing_serial = itertools.count(1)
+        self.sent, self.before_reply, self.after, self.end = [], list(before_reply), list(after), end
+        self.answered = 0
+
+    def send(self, message, serial=None):
+        message.header.serial = serial or next(self.outgoing_serial)
+        message.serialise()   # as the real one does: fails on values out of range
+        self.sent.append(message)
+
+    def _bus_call(self):
+        from jeepney import HeaderFields
+
+        calls = [m for m in self.sent if m.header.fields.get(HeaderFields.destination) == "org.freedesktop.DBus"]
+        return calls[self.answered] if self.answered < len(calls) else None
+
+    def receive(self, timeout=None):
+        from jeepney import new_method_return
+
+        if self.before_reply:
+            return self.before_reply.pop(0)
+        if self.answered == 0 and self._bus_call() is not None:   # RequestName: "now the owner"
+            self.answered += 1
+            return new_method_return(self._bus_call() or self.sent[0], "u", (1,))
+        if self.after:
+            return self.after.pop(0)
+        if (release := self._bus_call()) is not None:              # ReleaseName
+            self.answered += 1
+            return new_method_return(release, "u", (1,))
+        raise self.end
+
+
+def _calls(*methods):
+    from jeepney import DBusAddress, new_method_call
+
+    target = DBusAddress(dbus_service.OBJECT_PATH, dbus_service.BUS_NAME, dbus_service.INTERFACE)
+    messages = []
+    for serial, method in enumerate(methods, start=7):
+        messages.append(new_method_call(target, method))
+        messages[-1].header.serial = serial
+    return messages
+
+
+def test_dbus_survives_a_failing_call_and_keeps_the_one_that_started_it(capsys):
+    pytest.importorskip("jeepney")
+    from jeepney import MessageType
+
+    messages = _calls("Runs", "GetInfo", "GetInfo", "Runs")
+    bus = FakeBus(before_reply=messages[:1], after=messages[1:])   # the first before RequestName's reply
+    service = dbus_service.Service()
+    infos = iter([PermissionError(13, "Permission denied"), {"Version": ("u", -1)}])   # then one jeepney cannot send
+
+    def info():
+        answer = next(infos)
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+    service.info = info
+    assert dbus_service._answer(bus, service, idle_exit=60) == 0   # ended by the bus going away
+    replies = bus.sent[1:]
+    assert [m.header.message_type for m in replies] == [MessageType.method_return, MessageType.error,
+                                                        MessageType.error, MessageType.method_return]
+    assert "PermissionError" in replies[1].body[0] and "Traceback" in capsys.readouterr().err
+
+
+def test_dbus_answers_what_came_while_it_let_go_of_its_name():
+    # Idle, the service releases its name before it ends: a call the bus
+    # routed to it just before is still answered, the next one starts a new one.
+    pytest.importorskip("jeepney")
+    from jeepney import HeaderFields, MessageType
+
+    bus = FakeBus(after=_calls("Runs"), end=TimeoutError())
+    assert dbus_service._answer(bus, dbus_service.Service(), idle_exit=-1) == 0
+    members = [m.header.fields.get(HeaderFields.member) for m in bus.sent]
+    assert members[:2] == ["RequestName", "ReleaseName"]
+    assert bus.sent[2].header.message_type == MessageType.method_return
+    assert bus.sent[2].header.fields[HeaderFields.reply_serial] == 7
+
+
+def test_dbus_waits_for_its_runs_before_it_ends(tmp_path):
+    process = FakeRun([PAGE_LINE])
+    service = bus_service(process)
+    service.call("OpenPage", "s", (str(tmp_path),), "call")
+    drain(service)
+    threading.Timer(0.3, process.release.set).start()
+    started = time.monotonic()
+    dbus_service._outlive_runs(service)
+    assert service.runs == {} and time.monotonic() - started >= 0.25
+
+
+def test_dbus_ctrl_c_reaches_the_runs_too(tmp_path, monkeypatch):
+    pytest.importorskip("jeepney")
+    import contextlib
+    import jeepney.io.blocking
+
+    process = FakeRun([PAGE_LINE])
+    service = bus_service(process)
+    service.call("OpenPage", "s", (str(tmp_path),), "call")
+    drain(service)
+    monkeypatch.setattr(jeepney.io.blocking, "open_dbus_connection", lambda bus: contextlib.nullcontext())
+
+    def interrupted(conn, service, idle_exit):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(dbus_service, "_answer", interrupted)
+    assert dbus_service.serve(service) == 130
+    # Its own session keeps the terminal's Ctrl+C from the run: the service passes it on.
+    assert process.signals == [signal.SIGINT] and service.runs == {}
+
+
+def test_dbus_on_a_real_bus_started_by_the_bus(tmp_path, monkeypatch):
+    """A private dbus-daemon with lyrembed's service file: the bus starts
+    lyrembed --dbus at the first call, as the session bus does for Gatefold."""
+    pytest.importorskip("jeepney")
+    daemon = shutil.which("dbus-daemon")
+    if daemon is None:
+        pytest.skip("no dbus-daemon")
+    from jeepney import DBusAddress, MatchRule, MessageType, new_method_call
+    from jeepney.bus_messages import message_bus
+    from jeepney.io.blocking import open_dbus_connection
+
+    services = tmp_path / "services"
+    services.mkdir()
+    run_py = Path(__file__).resolve().parent.parent / "run.py"
+    (services / f"{dbus_service.BUS_NAME}.service").write_text(
+        dbus_service.service_file_text([sys.executable, str(run_py)]), encoding="utf-8")
+    (tmp_path / "bus.conf").write_text(f"""<!DOCTYPE busconfig PUBLIC "-//freedesktop//DTD D-Bus Bus Configuration 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/busconfig.dtd">
+<busconfig>
+  <type>session</type>
+  <listen>unix:tmpdir=/tmp</listen>
+  <servicedir>{services}</servicedir>
+  <policy context="default">
+    <allow send_destination="*" eavesdrop="true"/><allow eavesdrop="true"/><allow own="*"/>
+  </policy>
+</busconfig>
+""", encoding="utf-8")
+    # What the bus starts inherits this environment: its own config (no
+    # update check), home and music folder, no PATH to find git or a
+    # browser with, and no display to open one on.
+    home = tmp_path / "home"
+    album = home / "Music" / "Album"
+    album.mkdir(parents=True)
+    _make_flac(album / "01.flac")
+    (home / "xdg" / "lyrembed").mkdir(parents=True)
+    (home / "xdg" / "lyrembed" / "config.json").write_text('{"settings": {"check_for_updates": false}}',
+                                                           encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "xdg"))
+    monkeypatch.setenv("PATH", str(tmp_path / "no-tools"))
+    for name in ("BROWSER", "DISPLAY", "WAYLAND_DISPLAY", "TERM"):
+        monkeypatch.delenv(name, raising=False)
+    bus = subprocess.Popen([daemon, f"--config-file={tmp_path / 'bus.conf'}", "--nofork", "--print-address"],
+                           stdout=subprocess.PIPE, text=True)
+    try:
+        address = bus.stdout.readline().strip()
+        lyrembed_obj = DBusAddress(dbus_service.OBJECT_PATH, dbus_service.BUS_NAME, dbus_service.INTERFACE)
+        with open_dbus_connection(bus=address) as conn:
+            def call(method, signature=None, body=()):
+                reply = conn.send_and_get_reply(new_method_call(lyrembed_obj, method, signature, body), timeout=30)
+                assert reply.header.message_type == MessageType.method_return, reply.body
+                return reply.body
+
+            info = call("GetInfo")[0]
+            assert info["Version"] == ("s", config.__version__)
+            assert info["MusicFolder"] == ("s", str(home / "Music"))
+            assert len(call("ArtistAliases")[0]) == len(config.builtin_aliases())
+            assert call("Romanize", "ss", ("[00:01.00]Hello", "")) == ("", "", "already Latin")
+            finished = MatchRule(type="signal", interface=dbus_service.INTERFACE, member="Finished")
+            conn.send_and_get_reply(message_bus.AddMatch(finished), timeout=10)
+            with conn.filter(finished) as signals:
+                run, opened = call("OpenPage", "s", (str(album),))
+                assert opened is False                            # no browser here, and no address either
+                assert call("Runs") == ([(run, "page", str(album))],)
+                assert call("ShowPage", "s", (run,)) == (False,)
+                call("Stop", "s", (run,))
+                ended = conn.recv_until_filtered(signals, timeout=30)
+            assert ended.body == (run, 130)   # stopped before the page's first visit
+            refused = conn.send_and_get_reply(new_method_call(
+                lyrembed_obj, "FetchLyrics", "sa{sv}", ("/etc", {})), timeout=10)
+            assert refused.header.message_type == MessageType.error and "NotInMusicFolder" in str(refused.header.fields)
+            intro = conn.send_and_get_reply(new_method_call(
+                DBusAddress(dbus_service.OBJECT_PATH, dbus_service.BUS_NAME, "org.freedesktop.DBus.Introspectable"),
+                "Introspect"), timeout=10)
+            assert 'name="ShowPage"' in intro.body[0]
+    finally:
+        bus.terminate()
+        bus.wait(10)

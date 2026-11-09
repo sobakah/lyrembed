@@ -2,7 +2,7 @@
 
 Vibecoded tool for Linux, macOS and Windows to search, check, romanize and embed synchronized (`.lrc`) and plain lyrics into FLAC, MP3, OGG Vorbis, Opus and M4A files, with a focus on East Asian music. You work on a page in your browser that only your own computer can reach; batch mode runs in the terminal.
 
-Version 1.1.1 · Python 3.10+ · MIT
+Version 1.2.0 · Python 3.10+ · MIT
 
 Formerly called **lrckit**; see the [changelog](CHANGELOG.md) for moving an existing setup. Version 0.8.0 replaced the terminal menus with the browser page.
 
@@ -62,10 +62,10 @@ chmod +x run.py
 
 ### Dependencies
 
-Required: `mutagen`, `requests`, and a current browser (Firefox, Chrome, Edge, Safari).
+Required: `mutagen`, `requests`, and a current browser (Firefox, Chrome, Edge, Safari). `jeepney` is installed with them for the [D-Bus interface](#d-bus-for-gatefold-and-other-programs); without it only that is missing.
 
 ```bash
-pip install mutagen requests
+pip install mutagen requests jeepney
 ```
 
 Optional. A missing package only disables that one feature and is reported where it is used:
@@ -106,9 +106,12 @@ Without `--auto`, lyrembed opens its page in your default browser and prints the
 | `--list-aliases` | Print the artist alias groups in effect (built-in and your own) and exit |
 | `--max-files N` | Scan at most `N` files, `0` for no limit (overrides `settings.max_file_count`) |
 | `--no-browser` | Print the page's address instead of opening it |
-| `--return-url URL` / `--return-name NAME` | For another program's page that opens lyrembed (cdimport does): **Done – back to NAME** replaces Quit, ends lyrembed and sends the tab back to `URL`, which must be on this computer (`http://127.0.0.1:PORT/…`) |
+| `--return-url URL` / `--return-name NAME` | For another program's page that opens lyrembed (cdport does): **Done – back to NAME** replaces Quit, ends lyrembed and sends the tab back to `URL`, which must be on this computer (`http://127.0.0.1:PORT/…`) |
 | `--install-desktop-entry` | Add lyrembed to the app menu (Linux and BSD desktops), then exit; see [App menu](#app-menu) |
 | `--remove-desktop-entry` | Remove it again, then exit |
+| `--install-dbus-service` | Let the session bus start lyrembed when a program calls it, then exit; see [D-Bus](#d-bus-for-gatefold-and-other-programs) |
+| `--remove-dbus-service` | Remove that again, then exit |
+| `--dbus` | Serve the D-Bus interface until idle (what the session bus starts) |
 | `--auto` | Batch mode: tag confident matches without a page and without prompting |
 | `--overwrite` | With `--auto`, also replace existing lyrics; the old ones are backed up to `$XDG_STATE_HOME/lyrembed/backups/<time>/` (default `~/.local/state/…`) |
 | `--dry-run` | With `--auto`, report changes without writing |
@@ -166,7 +169,7 @@ Batch mode and the bulk fetch skip such tracks and report them as instrumental; 
 * **Romanize…** and **Edit as text** change the text itself; **Undo changes** returns to where you started.
 * Keys: Space plays and pauses, ← and → jump 5 s, N starts the chosen line, Ctrl+S saves. Leaving with unsaved changes asks first.
 
-**Import a CD** appears when [cdimport](https://github.com/sobakah/cdimport) 0.6.0 or newer is installed. It opens cdimport's page in the same tab to rip a disc; cdimport's lyrics step opens the album on a lyrembed page of its own, and at the end **Done – back to lyrembed** brings the tab back here with the imported album open.
+**Import a CD** appears when [cdport](https://github.com/sobakah/cdport) is installed (or cdimport 0.6.0 or newer, as it was called before 1.3.0). It opens cdport's page in the same tab to rip a disc; cdport's lyrics step opens the album on a lyrembed page of its own, and at the end **Done – back to lyrembed** brings the tab back here with the imported album open.
 
 **Bulk actions** run one action on many tracks, picked from a list (all, none, with or without lyrics), and show each track's result as it comes; each result leads to its track. Stop takes effect after the current track.
 
@@ -203,6 +206,35 @@ Romanization never drops characters: pykakasi silently deletes characters it can
 ```
 
 The romanized line always goes below the original, whatever `settings.romanization_layout` says, and timestamps are kept. `han_hint` (`"ja"`, `"zh"` or `null`) is what the program knows about ambiguous Han characters, for example from a `LANGUAGE` tag: with `"ja"`, Han characters that nothing in the lyrics decides are read as Japanese, as Kana elsewhere in the song would make them. Characters only Chinese uses still count as Chinese. Lyrics that need nothing (Latin, already romanized) come back as `null` with the reason, and a line that isn't a request gets an `error`. Nothing is written and nothing goes over the network.
+
+### D-Bus: for Gatefold and other programs
+
+```bash
+lyrembed --install-dbus-service
+```
+
+lets the session bus start lyrembed when a program calls it on `io.github.sobakah.lyrembed`. That is how a music player such as Gatefold can use lyrembed also from inside a Flatpak, which can neither start host programs nor read lyrembed's settings (it needs `--talk-name=io.github.sobakah.lyrembed`). The command writes `~/.local/share/dbus-1/services/io.github.sobakah.lyrembed.service`, starting the lyrembed that wrote it with `--dbus`; run it again after installing lyrembed somewhere else. `--remove-dbus-service` removes it.
+
+The interface (`io.github.sobakah.lyrembed1` on `/io/github/sobakah/lyrembed`):
+
+| Call | What it does |
+|---|---|
+| `GetInfo() → a{sv}` | `Version`, `InterfaceVersion` (1), `MusicFolder` (empty when there is none), `RomanizationLayout` and `MaxFileCount` from the settings, `Romanizes` (the languages whose packages are installed: `ko`, `ja`, `zh`, `any`) |
+| `ArtistAliases() → aas` | the artist alias groups in effect, as `--list-aliases` shows them |
+| `Romanize(s lyrics, s han_hint) → (s lyrics, s language, s reason)` | as `romanize --stdio`; `han_hint` is `""`, `"ja"` or `"zh"`, and `""` in the answer stands for `null` |
+| `OpenPage(s folder) → (s run, b opened)` | starts lyrembed's page on the folder (`""`: the folder picker) and opens it in your default browser; `opened` is false when no browser could be started. A page already open on that folder is shown again |
+| `ShowPage(s run) → b` | opens a page in the browser again, for a lost tab |
+| `FetchLyrics(s folder, a{sv} options) → s run` | `--auto` on a folder inside your music folder (`XDG_MUSIC_DIR` or `~/Music`); option `Romanize` (`b`, else `settings.auto_romanize`) |
+| `Runs() → a(sss)` | the runs still going: run, kind (`page` or `fetch`), the folder it was started on |
+| `Stop(s run)` | as Ctrl+C: the current track finishes first |
+| signal `Finished(s run, i exit_code)` | a run ended, with lyrembed's [exit code](#app-menu) |
+
+It has no call that runs a command, and a page's address never goes over the bus: its secret token opens everything the page can do, so lyrembed opens the browser itself. A page may open any folder, since you decide on it what is written; an unattended `FetchLyrics` only works inside your music folder. So the interface gives a sandboxed program no way out. A page nobody opens ends after ten minutes. Without calls or runs for five minutes, the service ends, and the bus starts it again at the next call.
+
+```bash
+gdbus call --session -d io.github.sobakah.lyrembed -o /io/github/sobakah/lyrembed \
+  -m io.github.sobakah.lyrembed1.Romanize '[00:01.00]사랑해요' ''
+```
 
 ### Limitations
 
@@ -276,7 +308,7 @@ An invalid file found on the search paths produces a warning and the defaults ar
 | `romanization_layout` | `replace` (default) or `below` to keep the original line with the romanized one below it: preselected when romanizing on the page, and used by the bulk action and batch mode |
 | `auto_romanize` | `true` makes batch mode (`--auto`) romanize the lyrics it embeds, like the bulk action: detected script, layout from `romanization_layout`, Latin lyrics left alone. `false` (default) embeds them as found. `--romanize` / `--no-romanize` override it |
 | `color` | Colours in the terminal output: `auto`, `always` or `never` |
-| `check_for_updates` | `true` (default): the page looks for a newer lyrembed every time it starts, in the background so the start doesn't wait, through git with the access `pipx install` has; Settings has **Check for updates** for any time. Installed with pipx, **Update** runs `pipx upgrade lyrembed` (or `pipx install --force …@<new tag>` for an install pinned to a release) and **Restart lyrembed** starts the new version on the same address, so the open tab just reloads. Batch mode and a lyrembed opened by cdimport never look |
+| `check_for_updates` | `true` (default): the page looks for a newer lyrembed every time it starts, in the background so the start doesn't wait, through git with the access `pipx install` has; Settings has **Check for updates** for any time. Installed with pipx, **Update** runs `pipx upgrade lyrembed` (or `pipx install --force …@<new tag>` for an install pinned to a release) and **Restart lyrembed** starts the new version on the same address, so the open tab just reloads. Batch mode and a lyrembed opened by cdport never look |
 
 `default_editor`, `preview_lines` and `enter_opens_preview` belonged to the terminal menus and do nothing since 0.8.0; lyrembed points them out so you can remove them.
 
@@ -313,6 +345,7 @@ lyrembed/
   ui.py                  Terminal colours and messages
   config.py              Defaults, recursive config merging, saving settings
   desktop.py             The app-menu entry (--install-desktop-entry)
+  dbus_service.py        The D-Bus interface (--dbus, --install-dbus-service)
 tests/                   pytest regression suite, Node tests for the editor's LRC logic
 ```
 

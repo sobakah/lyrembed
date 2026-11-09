@@ -19,7 +19,7 @@ except ModuleNotFoundError as exc:
         raise
 
     # The package's own files; kept in step with lyrembed/ (a test checks it).
-    modules = ["__init__.py", "__main__.py", "batch.py", "cli.py", "config.py", "core.py",
+    modules = ["__init__.py", "__main__.py", "batch.py", "cli.py", "config.py", "core.py", "dbus_service.py",
                "desktop.py", "providers.py", "selfupdate.py", "tagging.py", "text.py", "ui.py",
                "web.py"]
     data = ["aliases.json", "static"]

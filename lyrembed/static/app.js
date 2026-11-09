@@ -91,7 +91,7 @@ function App() {
   }, []);
 
   useEffect(() => {
-    // Back from cdimport, the tab arrives while cdimport is still ending and
+    // Back from cdport, the tab arrives while cdport is still ending and
     // has not yet said which album it imported: ask again until it has.
     const loadLibrary = (first) => api('/library')
       .then((lib) => {
@@ -255,7 +255,7 @@ function App() {
   };
 
   const [importing, setImporting] = useState(false);
-  // cdimport opens its own page; its Done leads back here with the album.
+  // cdport opens its own page; its Done leads back here with the album.
   const importCd = async () => {
     if (!leaveOk()) return;
     setImporting(true);
@@ -340,8 +340,8 @@ function App() {
         })}
       </ol>
       <div class="topbar-end">
-        ${library && library.cdimport && html`<button class="btn btn-flat" disabled=${importing} onClick=${importCd} title="Import a CD">
-          <${Icon} name="disc" /><span class="btn-text">${importing ? 'Starting cdimport…' : library.importing ? 'Back to the import' : 'Import a CD'}</span></button>`}
+        ${library && library.cdport && html`<button class="btn btn-flat" disabled=${importing} onClick=${importCd} title="Import a CD">
+          <${Icon} name="disc" /><span class="btn-text">${importing ? 'Starting cdport…' : library.importing ? 'Back to the import' : 'Import a CD'}</span></button>`}
         <button class=${'btn btn-flat' + (view.name === 'bulk' && !picker ? ' btn-on' : '')} disabled=${!folderOpen} title="Bulk actions"
           onClick=${() => go({ name: 'bulk' })}><${Icon} name="layers" /><span class="btn-text">Bulk actions${job && job.running ? ' ●' : ''}</span></button>
         <button class=${'btn btn-flat btn-icon' + (view.name === 'settings' && !picker ? ' btn-on' : '')} title="Settings" aria-label="Settings"
