@@ -1,5 +1,6 @@
-/* The look lyrembed and cdimport share: libadwaita's design language in CSS.
-   This file is the same in both programs (a copy, like vendor/): change both.
+/* The look of the family's pages: libadwaita's design language in CSS.
+   lyrembed's file, copied unchanged into cdport, keepbest and media-optimizer
+   (like vendor/): change it here and copy it there.
    A program's own style.css sets its accent and whatever only it has. */
 :root {
   color-scheme: light dark;

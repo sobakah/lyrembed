@@ -121,7 +121,7 @@
     "auto_romanize": false,
     "_prefer_album_artist": "true searches with the album artist instead of the track artist.",
     "prefer_album_artist": false,
-    "_search_all_aliases": "true searches every alias of the artist right away. false (default) searches the tag's artist first and the aliases only when that finds no synced lyrics, or on 'a'.",
+    "_search_all_aliases": "true searches every alias of the artist right away. false (default) searches the tag's artist first and the aliases only when that finds no synced lyrics, or on \"Also search as\" in the search results.",
     "search_all_aliases": false,
     "_color": "Colours in the terminal output (batch mode, messages): \"auto\", \"always\" or \"never\".",
     "color": "auto",

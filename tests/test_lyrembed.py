@@ -2666,14 +2666,12 @@ def test_the_page_knows_where_done_goes(tmp_path, monkeypatch, cfg):
     assert seen[1]["returnUrl"] == ""
 
 
-# --- importing a CD with cdport (called cdimport before 1.3.0) ------------------
-def _fake_cdport(folder: Path, help_text: str, run_lines: list[str], pause: float = 0.0,
-                 name: str = "cdport") -> Path:
-    """A 'cdport' that prints help or, when run, the given lines."""
-    script = folder / name
+# --- importing a CD with cdport ------------------------------------------------
+def _fake_cdport(folder: Path, run_lines: list[str], pause: float = 0.0) -> Path:
+    """A 'cdport' that prints the given lines when run."""
+    script = folder / "cdport"
     lines = ";".join(f"print({line!r}, flush=True)" for line in run_lines)
     script.write_text(f"#!{sys.executable}\nimport sys, time\n"
-                      f"if '--help' in sys.argv: print({help_text!r}); sys.exit(0)\n"
                       f"{lines.split(';')[0] if lines else ''}\n"
                       f"time.sleep({pause})\n"
                       + "\n".join(lines.split(";")[1:]) + "\n", encoding="utf-8")
@@ -2681,24 +2679,24 @@ def _fake_cdport(folder: Path, help_text: str, run_lines: list[str], pause: floa
     return script
 
 
-def test_only_a_cdport_that_can_lead_back_is_offered(tmp_path, monkeypatch):
+def test_cdport_is_found_on_path_or_in_local_bin(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path))
-    monkeypatch.setenv("PATH", str(tmp_path))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    monkeypatch.setenv("PATH", str(bin_dir))
     assert web.find_cdport() is None
-    _fake_cdport(tmp_path, "  --web  --no-browser", [], name="cdimport")         # cdimport 0.5
-    assert web.find_cdport() is None
-    old = _fake_cdport(tmp_path, "  --web  --return-url URL", [], name="cdimport")
-    assert web.find_cdport() == str(old)
-    # cdport installs a cdimport command too; the new name comes first.
-    script = _fake_cdport(tmp_path, "  --web  --return-url URL", [])
-    assert web.find_cdport() == str(script)
+    local = tmp_path / ".local" / "bin"
+    local.mkdir(parents=True)
+    in_local = _fake_cdport(local, [])
+    assert web.find_cdport() == str(in_local)
+    on_path = _fake_cdport(bin_dir, [])
+    assert web.find_cdport() == str(on_path)
 
 
-def test_both_names_lines_are_read():
-    for name in ("cdport", "cdimport"):
-        page = web._CDPORT_PAGE.search(f"{name} is running at http://127.0.0.1:5555/?token=a_B-9")
-        assert page.group(1) == "http://127.0.0.1:5555/?token=a_B-9"
-        assert web._CDPORT_DONE.match(f"{name} finished: /m/A B/Album: Live").group(1) == "/m/A B/Album: Live"
+def test_cdports_lines_are_read():
+    page = web._CDPORT_PAGE.search("cdport is running at http://127.0.0.1:5555/?token=a_B-9")
+    assert page.group(1) == "http://127.0.0.1:5555/?token=a_B-9"
+    assert web._CDPORT_DONE.match("cdport finished: /m/A B/Album: Live").group(1) == "/m/A B/Album: Live"
     assert not web._CDPORT_PAGE.search("lyrembed is running at http://127.0.0.1:1/?token=x")
 
 
@@ -2706,8 +2704,8 @@ def test_an_import_opens_the_album_it_brought(cfg, tmp_path, monkeypatch):
     album = tmp_path / "lib" / "Night Lines"
     album.mkdir(parents=True)
     _make_flac(album / "01.flac")
-    script = _fake_cdport(tmp_path, "--return-url", ["cdport is running at http://127.0.0.1:5555/?token=abc",
-                                                     f"cdport finished: {album}"], pause=0.3)
+    script = _fake_cdport(tmp_path, ["cdport is running at http://127.0.0.1:5555/?token=abc",
+                                     f"cdport finished: {album}"], pause=0.3)
     session = web.WebSession(None, [], tagging.MetadataCache())
     session._cdport = (True, str(script))
     with pytest.raises(web.ApiError):
@@ -3234,7 +3232,7 @@ def test_restart_finds_the_launcher_as_windows_starts_it(monkeypatch):
     assert selfupdate.restart_argv() == [r"C:\pipx\venvs\lyrembed\Scripts\lyrembed.exe", "--flag"]
 
 
-# --- romanize --stdio (for Gatefold) ----------------------------------------
+# --- romanize --stdio (for Jewelcase) ---------------------------------------
 
 def _romanize_lines(*requests: str) -> list[dict]:
     import io
@@ -3253,7 +3251,7 @@ def test_romanize_stdio_answers_every_line_and_survives_bad_ones():
     assert answers[3]["lyrics"] is None
 
 
-def test_romanize_help_names_stdio_which_gatefold_looks_for(capsys):
+def test_romanize_help_names_stdio_which_jewelcase_looks_for(capsys):
     with pytest.raises(SystemExit):
         cli.main(["romanize", "--help"])
     assert "--stdio" in capsys.readouterr().out
@@ -3284,7 +3282,7 @@ def test_a_japanese_hint_reads_kanji_only_lyrics_as_japanese():
 
 
 
-# --- the D-Bus interface, for Gatefold ------------------------------------------
+# --- the D-Bus interface, for Jewelcase -----------------------------------------
 import itertools  # noqa: E402
 import signal  # noqa: E402
 
@@ -3353,7 +3351,7 @@ def music(tmp_path, monkeypatch):
     return folder
 
 
-def test_dbus_info_says_what_gatefold_read_from_the_config(config_home, music):
+def test_dbus_info_says_what_jewelcase_reads_from_the_config(config_home, music):
     config_home.parent.mkdir(parents=True)
     config_home.write_text('{"settings": {"romanization_layout": "below", "max_file_count": 400}}', encoding="utf-8")
     service = bus_service()
@@ -3705,7 +3703,7 @@ def test_dbus_ctrl_c_reaches_the_runs_too(tmp_path, monkeypatch):
 
 def test_dbus_on_a_real_bus_started_by_the_bus(tmp_path, monkeypatch):
     """A private dbus-daemon with lyrembed's service file: the bus starts
-    lyrembed --dbus at the first call, as the session bus does for Gatefold."""
+    lyrembed --dbus at the first call, as the session bus does for Jewelcase."""
     pytest.importorskip("jeepney")
     daemon = shutil.which("dbus-daemon")
     if daemon is None:

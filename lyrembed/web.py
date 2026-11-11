@@ -148,36 +148,23 @@ def _is_alac(path: Path) -> bool:
 
 # --- importing a CD with cdport -----------------------------------------------
 # cdport's lines this reads (cdport/web.py, RUNNING_LINE and FINISHED_LINE):
-# its page's address, and the album folder when the run is done. cdport
-# was called cdimport before 1.3.0; started under that name it still says
-# "cdimport", and a 1.2.x says nothing else.
-_CDPORT_NAMES = ("cdport", "cdimport")
-_CDPORT_PAGE = re.compile(r"(?:cdport|cdimport) is running at "
+# its page's address, and the album folder when the run is done.
+_CDPORT_PAGE = re.compile(r"cdport is running at "
                           r"(http://(?:127\.0\.0\.1|localhost):\d+/\?token=[A-Za-z0-9_-]+)")
-_CDPORT_DONE = re.compile(r"^(?:cdport|cdimport) finished: (.+)$")
+_CDPORT_DONE = re.compile(r"^cdport finished: (.+)$")
 # After cdport sends the tab back, lyrembed's page needs a moment to load:
 # until then, its "closing" from leaving does not count.
 IMPORT_GRACE = 30.0
 
 
 def find_cdport() -> str | None:
-    """cdport, if it is installed and can lead back to lyrembed's page
-    (--return-url: every cdport, cdimport from 0.6.0). cdport first: it also
-    installs a cdimport command, and a cdimport found alone may be an old one."""
-    for name in _CDPORT_NAMES:
-        found = shutil.which(name)
-        if found is None:
-            local = Path.home() / ".local" / "bin" / name
-            found = str(local) if local.is_file() else None
-        if found is None:
-            continue
-        try:
-            result = subprocess.run([found, "--help"], capture_output=True, text=True, timeout=20)
-        except (OSError, subprocess.SubprocessError):
-            continue
-        if "--return-url" in result.stdout:
-            return found
-    return None
+    """The cdport command, if it is installed: on PATH, else in ~/.local/bin,
+    where pipx puts it even when PATH lacks that folder."""
+    found = shutil.which("cdport")
+    if found is None:
+        local = Path.home() / ".local" / "bin" / "cdport"
+        found = str(local) if local.is_file() else None
+    return found
 
 
 class Import:

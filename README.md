@@ -2,10 +2,6 @@
 
 Vibecoded tool for Linux, macOS and Windows to search, check, romanize and embed synchronized (`.lrc`) and plain lyrics into FLAC, MP3, OGG Vorbis, Opus and M4A files, with a focus on East Asian music. You work on a page in your browser that only your own computer can reach; batch mode runs in the terminal.
 
-Version 1.2.0 · Python 3.10+ · MIT
-
-Formerly called **lrckit**; see the [changelog](CHANGELOG.md) for moving an existing setup. Version 0.8.0 replaced the terminal menus with the browser page.
-
 ---
 
 ## Features
@@ -16,9 +12,10 @@ Formerly called **lrckit**; see the [changelog](CHANGELOG.md) for moving an exis
 * **Concurrent multi-provider search** — LRCLIB, NetEase Cloud Music and QQ Music are queried in parallel on a pooled HTTP session with retry and backoff; Megalobiz (community-synced lyrics, often several versions per song), the artist's aliases and the optional `syncedlyrics` engine follow only when that finds no synced lyrics.
 * **Exact-match lookups** — LRCLIB's `/get` endpoint is queried with title, artist, album and duration; fuzzy `/search` queries run alongside as a fallback.
 * **Confidence-aware ranking** — ordered by exact match, synchronization, script preference and duration agreement.
-* **Smart tag cleaning & aliases** — strips features (`feat. …`), filters localized bracketed subtitles out of queries, and resolves group acronyms (*Tomorrow X Together* ↔ *TXT*) with word-boundary matching.
+* **Smart tag cleaning & aliases** — strips features (`feat. …`), filters localised bracketed subtitles out of queries, and resolves group acronyms (*Tomorrow X Together* ↔ *TXT*) with word-boundary matching.
 * **Romanization** with automatic script detection, preserving LRC timestamps: Hangul → Romaja, Kanji/Kana → Hepburn Rōmaji, Hanzi → Pīnyīn, and any other script → Latin via `anyascii`. Lines containing several scripts at once are split into runs and converted per run, and text that is already Latin is never touched — so passes can be combined without destroying each other's output.
 * **Batch mode** — `--auto` tags every track with a confident match; `--dry-run` reports without writing, `--overwrite` backs up the lyrics it replaces.
+* **Works with the other programs** — **Import a CD** hands the tab to [cdport](https://github.com/sobakah/cdport) and back; a player such as [Jewelcase](https://github.com/sobakah/jewelcase) gets romanization, pages and lyrics searches over [D-Bus](#d-bus).
 * **Search results are cached for the session** — leaving a track and coming back to it reuses the previous result instead of querying the providers again.
 * **Safeguards** — metadata cached by modification time, recursion depth and file-count caps, backups of every lyrics they replace, colour output honouring `NO_COLOR` and non-TTY pipes.
 
@@ -36,7 +33,7 @@ pipx install "lyrembed[all] @ git+https://github.com/sobakah/lyrembed.git"
 
 This installs a `lyrembed` command on your `PATH`. The page tells you about a newer release and installs it for you (see `check_for_updates` under [Configuration](#configuration)); `pipx upgrade lyrembed` does the same by hand.
 
-> **fish users:** `pipx` and `pip install --user` place their launchers in `~/.local/bin`. On Fedora that directory is added to `PATH` by `~/.bash_profile`, which fish never reads — so the install succeeds but `lyrembed` is not found. Add it once with `fish_add_path ~/.local/bin` (fish 3.2+); it persists across sessions. In a virtual environment, use `source venv/bin/activate.fish` rather than `activate`.
+> **fish users:** `pipx` and `pip install --user` place their launchers in `~/.local/bin`. On Fedora that folder is added to `PATH` by `~/.bash_profile`, which fish never reads — so the install succeeds but `lyrembed` is not found. Add it once with `fish_add_path ~/.local/bin` (fish 3.2+); it persists across sessions. In a virtual environment, use `source venv/bin/activate.fish` rather than `activate`.
 
 ### From a checkout
 
@@ -46,23 +43,11 @@ cd lyrembed
 pip install -e ".[all]"
 ```
 
-The checkout also runs without installation. `run.py` is only a launcher — it needs the sibling `lyrembed/` package directory next to it:
-
-```
-run.py
-lyrembed/
-    __init__.py  cli.py  web.py  core.py  batch.py  providers.py
-    tagging.py   text.py ui.py   config.py desktop.py  static/
-```
-
-```bash
-chmod +x run.py
-./run.py ~/Music/Artist/Album
-```
+The checkout also runs without installation: `./run.py ~/Music/Artist/Album`. `run.py` is only a launcher and needs the `lyrembed/` package folder next to it.
 
 ### Dependencies
 
-Required: `mutagen`, `requests`, and a current browser (Firefox, Chrome, Edge, Safari). `jeepney` is installed with them for the [D-Bus interface](#d-bus-for-gatefold-and-other-programs); without it only that is missing.
+Required: Python 3.10 or newer, `mutagen`, `requests`, and a current browser (Firefox, Chrome, Edge, Safari). `jeepney` is installed with them for the [D-Bus interface](#d-bus); without it only that is missing.
 
 ```bash
 pip install mutagen requests jeepney
@@ -76,7 +61,7 @@ pip install --user pykakasi pypinyin korean-romanizer anyascii syncedlyrics
 
 | Package | Functionality |
 |---|---|
-| `syncedlyrics` | Scraping engine for Musixmatch and Genius (neither answers as of October 2026) |
+| `syncedlyrics` | Scraping engine for Musixmatch and Genius (currently neither answers through it) |
 | `korean-romanizer` | Hangul → Revised Romanization of Korean |
 | `pykakasi` | Kanji and Kana → Hepburn Rōmaji |
 | `pypinyin` | Hanzi → Pīnyīn with tone marks |
@@ -90,7 +75,7 @@ pip install --user pykakasi pypinyin korean-romanizer anyascii syncedlyrics
 ## Usage
 
 ```bash
-lyrembed                              # the page, current directory
+lyrembed                              # the page, current folder
 lyrembed ~/Music/Artist/Album         # the page, specific album
 lyrembed ~/Music/Artist --auto        # tag everything with a confident match
 lyrembed ~/Music/Artist --auto --dry-run
@@ -100,7 +85,7 @@ Without `--auto`, lyrembed opens its page in your default browser and prints the
 
 | Option | Effect |
 |---|---|
-| `path` | Music directory (default: current directory) |
+| `path` | Music folder (default: the current folder) |
 | `--version` | Print the version and exit |
 | `-c`, `--config FILE` | Use this config file instead of the search paths; an unusable file is an error |
 | `--list-aliases` | Print the artist alias groups in effect (built-in and your own) and exit |
@@ -109,7 +94,7 @@ Without `--auto`, lyrembed opens its page in your default browser and prints the
 | `--return-url URL` / `--return-name NAME` | For another program's page that opens lyrembed (cdport does): **Done – back to NAME** replaces Quit, ends lyrembed and sends the tab back to `URL`, which must be on this computer (`http://127.0.0.1:PORT/…`) |
 | `--install-desktop-entry` | Add lyrembed to the app menu (Linux and BSD desktops), then exit; see [App menu](#app-menu) |
 | `--remove-desktop-entry` | Remove it again, then exit |
-| `--install-dbus-service` | Let the session bus start lyrembed when a program calls it, then exit; see [D-Bus](#d-bus-for-gatefold-and-other-programs) |
+| `--install-dbus-service` | Let the session bus start lyrembed when a program calls it, then exit; see [D-Bus](#d-bus) |
 | `--remove-dbus-service` | Remove that again, then exit |
 | `--dbus` | Serve the D-Bus interface until idle (what the session bus starts) |
 | `--auto` | Batch mode: tag confident matches without a page and without prompting |
@@ -124,6 +109,8 @@ Without `--auto`, lyrembed opens its page in your default browser and prints the
 
 To go easy on LRCLIB, a free community service, batch mode first asks only its exact `/get` endpoint and runs the full search across all providers just for tracks that are not settled that way, and it waits `api.batch_delay_seconds` between tracks. Batch mode never prompts: a path it cannot use ends the run with exit code 2.
 
+Exit codes: `0` success or quit, `1` some files failed in batch mode, `2` unusable path, config or arguments, `130` aborted with Ctrl+C.
+
 ### App menu
 
 ```bash
@@ -131,8 +118,6 @@ lyrembed --install-desktop-entry
 ```
 
 adds lyrembed to the app menu of GNOME, KDE and other freedesktop.org desktops: `~/.local/share/applications/lyrembed.desktop` and an icon under `~/.local/share/icons/`. The entry starts the lyrembed that wrote it — a pipx installation, or the Python and `run.py` of a checkout — so run the command again after installing lyrembed somewhere else. Started from the menu, the page opens in your default browser with the folder picker in your music folder (`XDG_MUSIC_DIR`). `--remove-desktop-entry` removes both files.
-
-Exit codes: `0` success or quit, `1` some files failed in batch mode, `2` unusable path, config or arguments, `130` aborted with Ctrl+C.
 
 ---
 
@@ -145,12 +130,12 @@ Exit codes: `0` success or quit, `1` some files failed in batch mode, `2` unusab
 * **Best match** marks the entry batch mode would pick (synced, artist and title fit, length within tolerance); otherwise **Exact match** marks a record LRCLIB returned as a direct match rather than a search hit. Synced lyrics are listed above plain ones, even above LRCLIB's exact match when that has plain lyrics only (`settings.prefer_synced`).
 * Each result shows whether its length was verified (`length OK` / `±N s`), or just its own length when the track's length is unknown.
 * **Megalobiz** results come from a site where users sync lyrics themselves: often several versions of one song, also for little-known songs, of varying quality. It is only asked when LRCLIB, NetEase and QQ Music find no synced lyrics that fit, because its free API allows 30 requests a minute and 1,000 a day (`api.megalobiz_api_key` raises that); after a refusal it is skipped until its limit resets. The preview links to the lyrics' page there.
-* **syncedlyrics** results come from the `syncedlyrics` engine, which tries Musixmatch and Genius (`api.syncedlyrics_providers`) and returns bare text; they are marked *not verified*, since they carry no artist or title to check against. By default the engine only runs when LRCLIB, NetEase and QQ Music find no synced lyrics that fit (`api.syncedlyrics_as_fallback`). As of October 2026 neither source answers through syncedlyrics 1.0.1, its latest release: Musixmatch returns the same unrelated songs for every search, Genius refuses the requests.
+* **syncedlyrics** results come from the `syncedlyrics` engine, which tries Musixmatch and Genius (`api.syncedlyrics_providers`) and returns bare text; they are marked *not verified*, since they carry no artist or title to check against. By default the engine only runs when LRCLIB, NetEase and QQ Music find no synced lyrics that fit (`api.syncedlyrics_as_fallback`). Currently neither source answers through syncedlyrics: Musixmatch returns the same unrelated songs for every search, Genius refuses the requests.
 * NetEase results may come in a second variant marked `user romanization` — the romanized lyrics NetEase users submitted. **QQ Music** is strong in Chinese, Korean and Japanese music; it often has lyrics when LRCLIB and NetEase do not.
 * **Romanize when saving**, in the preview, romanizes before both Save buttons the way batch mode does with `settings.auto_romanize` (detected script, layout from `settings.romanization_layout`), without opening the editor. It starts as that setting says and stays as set while you work through the album.
 * **Search with other terms** searches for another title or artist, **Search again, without the cache** asks the providers again, **Also search as …** adds the artist's aliases, and **Type or paste lyrics yourself** opens an empty editor.
 
-Only results that fit the track are listed: the artist must match (aliases included), and the title too — or, for a title in another language such as `사랑을 했다` vs `LOVE SCENARIO`, the length. The rest sits behind **Show N results for other titles or artists** and is marked `≠ artist` / `≠ title`. NetEase and QQ Music in particular pad searches without good hits with unrelated popular songs, whose lyrics are not even fetched; NetEase does the same when it throttles a client that sent too many requests, which lyrembed then reports as a provider notice. To stay below that limit, NetEase and QQ Music get one search at a time and at most three lyrics requests per round. Version notes count: the sung version is no match for `Song (Inst.)`, even as LRCLIB's exact match, and an instrumental version is no match for the sung track even when its length fits.
+Only results that fit the track are listed: the artist must match (aliases included), and the title too — or, for a title in another language (a Korean title in the tags, its English one at the provider), the length. The rest sits behind **Show N results for other titles or artists** and is marked `≠ artist` / `≠ title`. NetEase and QQ Music in particular pad searches without good hits with unrelated popular songs, whose lyrics are not even fetched; NetEase does the same when it throttles a client that sent too many requests, which lyrembed then reports as a provider notice. To stay below that limit, NetEase and QQ Music get one search at a time and at most three lyrics requests per round. Version notes count: the sung version is no match for `Song (Inst.)`, even as LRCLIB's exact match, and an instrumental version is no match for the sung track even when its length fits.
 
 **Instrumental tracks.** A `♪` notice says when a track probably has no lyrics, and why:
 
@@ -169,7 +154,7 @@ Batch mode and the bulk fetch skip such tracks and report them as instrumental; 
 * **Romanize…** and **Edit as text** change the text itself; **Undo changes** returns to where you started.
 * Keys: Space plays and pauses, ← and → jump 5 s, N starts the chosen line, Ctrl+S saves. Leaving with unsaved changes asks first.
 
-**Import a CD** appears when [cdport](https://github.com/sobakah/cdport) is installed (or cdimport 0.6.0 or newer, as it was called before 1.3.0). It opens cdport's page in the same tab to rip a disc; cdport's lyrics step opens the album on a lyrembed page of its own, and at the end **Done – back to lyrembed** brings the tab back here with the imported album open.
+**Import a CD** appears when [cdport](https://github.com/sobakah/cdport) is installed. It opens cdport's page in the same tab to rip a disc; cdport's lyrics step opens the album on a lyrembed page of its own, and at the end **Done – back to lyrembed** brings the tab back here with the imported album open.
 
 **Bulk actions** run one action on many tracks, picked from a list (all, none, with or without lyrics), and show each track's result as it comes; each result leads to its track. Stop takes effect after the current track.
 
@@ -196,58 +181,25 @@ Pick **Mixed scripts** under **Romanize…** in the editor; it is preselected wh
 
 Romanization never drops characters: pykakasi silently deletes characters it cannot read (and sometimes the one after them), so those are converted with pypinyin — or anyascii — instead.
 
-### For other programs
+---
 
-`lyrembed romanize --stdio` romanizes lyrics for display in another program, such as the music player Gatefold, which shows the romanization under each original line. It reads one JSON object per line from standard input and answers each with one line on standard output, until the input ends:
+## Tagging
 
-```
-→ {"id": 1, "lyrics": "[00:01.00]사랑해요", "han_hint": null}
-← {"id": 1, "lyrics": "[00:01.00]사랑해요\n[00:01.00]saranghaeyo", "language": "ko", "reason": ""}
-```
+Lyrics are written into standard metadata containers; audio streams are never transcoded.
 
-The romanized line always goes below the original, whatever `settings.romanization_layout` says, and timestamps are kept. `han_hint` (`"ja"`, `"zh"` or `null`) is what the program knows about ambiguous Han characters, for example from a `LANGUAGE` tag: with `"ja"`, Han characters that nothing in the lyrics decides are read as Japanese, as Kana elsewhere in the song would make them. Characters only Chinese uses still count as Chinese. Lyrics that need nothing (Latin, already romanized) come back as `null` with the reason, and a line that isn't a request gets an `error`. Nothing is written and nothing goes over the network.
+* **FLAC, OGG Vorbis, Opus** — Vorbis comment `LYRICS`. Competing `UNSYNCEDLYRICS` and `SYNCEDLYRICS` fields are removed on write.
+* **MP3** — ID3v2 `USLT` frame, UTF-8 (`encoding=3`). The file's ID3v2 version is kept; new tags use `id3_v2_version`. Synchronized `SYLT` frames are read (millisecond timestamps) and replaced on write, so players do not keep showing the old ones.
+* **M4A / AAC / ALAC** — MP4 atom `\xa9lyr` (`©lyr`).
+* **Sidecar** — with `write_sidecar_lrc` or `--sidecar`, a `<track>.lrc` is written alongside the audio file. Without it, an existing `<track>.lrc` is left alone but reported, since many players prefer it over the embedded tag; deleting a track's lyrics offers to delete it too.
+* **Covers** are only read, never written: the front cover embedded in the file, or a `cover`/`folder`/`front` image next to it.
 
-### D-Bus: for Gatefold and other programs
-
-```bash
-lyrembed --install-dbus-service
-```
-
-lets the session bus start lyrembed when a program calls it on `io.github.sobakah.lyrembed`. That is how a music player such as Gatefold can use lyrembed also from inside a Flatpak, which can neither start host programs nor read lyrembed's settings (it needs `--talk-name=io.github.sobakah.lyrembed`). The command writes `~/.local/share/dbus-1/services/io.github.sobakah.lyrembed.service`, starting the lyrembed that wrote it with `--dbus`; run it again after installing lyrembed somewhere else. `--remove-dbus-service` removes it.
-
-The interface (`io.github.sobakah.lyrembed1` on `/io/github/sobakah/lyrembed`):
-
-| Call | What it does |
-|---|---|
-| `GetInfo() → a{sv}` | `Version`, `InterfaceVersion` (1), `MusicFolder` (empty when there is none), `RomanizationLayout` and `MaxFileCount` from the settings, `Romanizes` (the languages whose packages are installed: `ko`, `ja`, `zh`, `any`) |
-| `ArtistAliases() → aas` | the artist alias groups in effect, as `--list-aliases` shows them |
-| `Romanize(s lyrics, s han_hint) → (s lyrics, s language, s reason)` | as `romanize --stdio`; `han_hint` is `""`, `"ja"` or `"zh"`, and `""` in the answer stands for `null` |
-| `OpenPage(s folder) → (s run, b opened)` | starts lyrembed's page on the folder (`""`: the folder picker) and opens it in your default browser; `opened` is false when no browser could be started. A page already open on that folder is shown again |
-| `ShowPage(s run) → b` | opens a page in the browser again, for a lost tab |
-| `FetchLyrics(s folder, a{sv} options) → s run` | `--auto` on a folder inside your music folder (`XDG_MUSIC_DIR` or `~/Music`); option `Romanize` (`b`, else `settings.auto_romanize`) |
-| `Runs() → a(sss)` | the runs still going: run, kind (`page` or `fetch`), the folder it was started on |
-| `Stop(s run)` | as Ctrl+C: the current track finishes first |
-| signal `Finished(s run, i exit_code)` | a run ended, with lyrembed's [exit code](#app-menu) |
-
-It has no call that runs a command, and a page's address never goes over the bus: its secret token opens everything the page can do, so lyrembed opens the browser itself. A page may open any folder, since you decide on it what is written; an unattended `FetchLyrics` only works inside your music folder. So the interface gives a sandboxed program no way out. A page nobody opens ends after ten minutes. Without calls or runs for five minutes, the service ends, and the bus starts it again at the next call.
-
-```bash
-gdbus call --session -d io.github.sobakah.lyrembed -o /io/github/sobakah/lyrembed \
-  -m io.github.sobakah.lyrembed1.Romanize '[00:01.00]사랑해요' ''
-```
-
-### Limitations
-
-* **Runs of purely shared characters cannot be resolved automatically.** `月光下的思念` and `東京物語` are valid in either reading and fall back to your choice. Roughly four in five runs resolve on their own in typical lyrics; traditional Chinese resolves less often than simplified.
-* **Japanese word spacing is approximate.** Verb and adjective endings stay attached (`愛してる` → `itoshiteru`), but a particle following a Kana-ending compound may be attached too: `ずっと一緒にいたい` → `zutto isshoniitai`.
-* **Kanji readings come from pykakasi** and are not context-aware for names or unusual readings — `君` becomes `kun`, not `kimi`.
-* **Provider credit headers** such as NetEase's `作词 : …` are removed from NetEase and QQ Music lyrics, as are the header tags QQ Music and Megalobiz put above their lyrics (`[ti:]`, `[ar:]`, `[al:]`, `[by:]`, `[length:]`, `[kana:]` and the like; a non-zero `[offset:]` stays) and QQ Music's opening `Title - Artist` line. Typed into other lyrics by hand, they are ignored when detecting scripts but still passed through the conversion.
+Embedded tags are recognised by Navidrome, Jellyfin, Symfonium, Feishin and foobar2000.
 
 ---
 
 ## Configuration
 
-Lookup order: `--config FILE` → `$XDG_CONFIG_HOME/lyrembed/config.json` (falling back to `~/.config/lyrembed/config.json`) → `~/.config/lrckit/config.json` from before the rename, with a reminder to move it → `config.json` in the root of a source checkout.
+Lookup order: `--config FILE` → `$XDG_CONFIG_HOME/lyrembed/config.json` (falling back to `~/.config/lyrembed/config.json`) → `config.json` in the root of a source checkout.
 
 User values are merged **recursively** over the built-in defaults, so a file with only the keys you care about is valid:
 
@@ -272,7 +224,7 @@ An invalid file found on the search paths produces a warning and the defaults ar
 
 | Key | Meaning |
 |---|---|
-| `lrclib_url`, `netease_search_url`, `netease_lyric_url`, `qqmusic_search_url`, `qqmusic_lyric_url`, `megalobiz_url` | Provider endpoints. NetEase's `/api/search/pc` is the default: `/api/search/get` (the earlier default) answers anonymous clients with unrelated popular songs, and the older `/api/search/get/web` answers encrypted |
+| `lrclib_url`, `netease_search_url`, `netease_lyric_url`, `qqmusic_search_url`, `qqmusic_lyric_url`, `megalobiz_url` | Provider endpoints. NetEase's default is `/api/search/pc`: `/api/search/get` answers anonymous clients with unrelated popular songs, and `/api/search/get/web` answers encrypted |
 | `timeout_seconds` | Per-request timeout |
 | `netease_search_limit` | Results requested per NetEase query |
 | `user_agent` | Sent to LRCLIB; identify your fork by name, version and URL. Defaults to the current version, so leave it out unless you change it |
@@ -294,7 +246,7 @@ An invalid file found on the search paths produces a warning and the defaults ar
 |---|---|
 | `supported_extensions` | File types included in a scan; only `.flac`, `.mp3`, `.ogg`, `.opus` and `.m4a` can be tagged, others are ignored with a warning |
 | `non_latin_ratio_threshold` | Share of lyric lines (`0.1` = 10%) that must contain non-Latin letters for lyrics to count as original-script. Counted per line because one Hangul or Han character holds a whole syllable; LRC tags and credit lines are ignored |
-| `max_search_depth` | Directory levels to descend. `3` collects files up to three levels below the start directory; deeper directories are not entered. |
+| `max_search_depth` | Folder levels to descend. `3` collects files up to three levels below the start folder; deeper folders are not entered. |
 | `max_file_count` | Refuse a folder with more than this many files and ask for a narrower one; `0` for no limit |
 | `search_cache_entries` | How many past searches to keep in memory for the session |
 | `prefer_synced` | `true` (default) ranks synced lyrics above plain ones, also above an exact match with plain lyrics only; `false` puts the exact match first |
@@ -310,56 +262,60 @@ An invalid file found on the search paths produces a warning and the defaults ar
 | `color` | Colours in the terminal output: `auto`, `always` or `never` |
 | `check_for_updates` | `true` (default): the page looks for a newer lyrembed every time it starts, in the background so the start doesn't wait, through git with the access `pipx install` has; Settings has **Check for updates** for any time. Installed with pipx, **Update** runs `pipx upgrade lyrembed` (or `pipx install --force …@<new tag>` for an install pinned to a release) and **Restart lyrembed** starts the new version on the same address, so the open tab just reloads. Batch mode and a lyrembed opened by cdport never look |
 
-`default_editor`, `preview_lines` and `enter_opens_preview` belonged to the terminal menus and do nothing since 0.8.0; lyrembed points them out so you can remove them.
-
 ---
 
-## Tagging
+## Working with other programs
 
-Lyrics are written into standard metadata containers; audio streams are never transcoded.
+[cdport](https://github.com/sobakah/cdport) rips and tags CDs; its lyrics step opens the album on a lyrembed page with `--return-url`, so **Done – back to cdport** returns the tab, and lyrembed's **Import a CD** starts cdport the other way round (see [The page](#the-page)).
 
-* **FLAC, OGG Vorbis, Opus** — Vorbis comment `LYRICS`. Competing `UNSYNCEDLYRICS` and `SYNCEDLYRICS` fields are removed on write.
-* **MP3** — ID3v2 `USLT` frame, UTF-8 (`encoding=3`). The file's ID3v2 version is kept; new tags use `id3_v2_version`. Synchronized `SYLT` frames are read (millisecond timestamps) and replaced on write, so players do not keep showing the old ones.
-* **M4A / AAC / ALAC** — MP4 atom `\xa9lyr` (`©lyr`).
-* **Sidecar** — with `write_sidecar_lrc` or `--sidecar`, a `<track>.lrc` is written alongside the audio file. Without it, an existing `<track>.lrc` is left alone but reported, since many players prefer it over the embedded tag; deleting a track's lyrics offers to delete it too.
-* **Covers** are only read, never written: the front cover embedded in the file, or a `cover`/`folder`/`front` image next to it.
+### Romanizing for other programs
 
-Embedded tags are recognized by Navidrome, Jellyfin, Symfonium, Feishin and foobar2000.
-
----
-
-## Development
+`lyrembed romanize --stdio` romanizes lyrics for display in another program, such as the music player [Jewelcase](https://github.com/sobakah/jewelcase), which shows the romanization under each original line. It reads one JSON object per line from standard input and answers each with one line on standard output, until the input ends:
 
 ```
-run.py                   Launcher for checkouts
-lyrembed/
-  cli.py                 Argument parsing and start-up
-  web.py                 The page's local HTTP server and JSON API
-  static/                The page: HTML, JavaScript (Preact and htm, copied in), CSS
-  core.py                Scanning, saving, backups, batch and bulk runs; no output
-  batch.py               Batch mode (--auto) in the terminal
-  providers.py           LRCLIB / NetEase / QQ Music / Megalobiz / syncedlyrics, ranking
-  tagging.py             Metadata and cover reading, writing, caching
-  text.py                Tag cleaning, artist matching, romanization
-  aliases.json           Built-in artist alias groups
-  ui.py                  Terminal colours and messages
-  config.py              Defaults, recursive config merging, saving settings
-  desktop.py             The app-menu entry (--install-desktop-entry)
-  dbus_service.py        The D-Bus interface (--dbus, --install-dbus-service)
-tests/                   pytest regression suite, Node tests for the editor's LRC logic
+→ {"id": 1, "lyrics": "[00:01.00]사랑해요", "han_hint": null}
+← {"id": 1, "lyrics": "[00:01.00]사랑해요\n[00:01.00]saranghaeyo", "language": "ko", "reason": ""}
 ```
+
+The romanized line always goes below the original, whatever `settings.romanization_layout` says, and timestamps are kept. `han_hint` (`"ja"`, `"zh"` or `null`) is what the program knows about ambiguous Han characters, for example from a `LANGUAGE` tag: with `"ja"`, Han characters that nothing in the lyrics decides are read as Japanese, as Kana elsewhere in the song would make them. Characters only Chinese uses still count as Chinese. Lyrics that need nothing (Latin, already romanized) come back as `null` with the reason, and a line that isn't a request gets an `error`. Nothing is written and nothing goes over the network.
+
+### D-Bus
 
 ```bash
-pip install -e ".[all,dev]"
-pytest -q          # runs tests/lrc.test.mjs too when Node.js is installed
-python -m pyflakes lyrembed/ tests/ run.py
+lyrembed --install-dbus-service
+```
+
+lets the session bus start lyrembed when a program calls it on `io.github.sobakah.lyrembed`. That is how a music player such as Jewelcase can use lyrembed also from inside a Flatpak, which can neither start host programs nor read lyrembed's settings (it needs `--talk-name=io.github.sobakah.lyrembed`). The command writes `~/.local/share/dbus-1/services/io.github.sobakah.lyrembed.service`, starting the lyrembed that wrote it with `--dbus`; run it again after installing lyrembed somewhere else. `--remove-dbus-service` removes it.
+
+The interface (`io.github.sobakah.lyrembed1` on `/io/github/sobakah/lyrembed`):
+
+| Call | What it does |
+|---|---|
+| `GetInfo() → a{sv}` | `Version`, `InterfaceVersion` (1), `MusicFolder` (empty when there is none), `RomanizationLayout` and `MaxFileCount` from the settings, `Romanizes` (the languages whose packages are installed: `ko`, `ja`, `zh`, `any`) |
+| `ArtistAliases() → aas` | the artist alias groups in effect, as `--list-aliases` shows them |
+| `Romanize(s lyrics, s han_hint) → (s lyrics, s language, s reason)` | as `romanize --stdio`; `han_hint` is `""`, `"ja"` or `"zh"`, and `""` in the answer stands for `null` |
+| `OpenPage(s folder) → (s run, b opened)` | starts lyrembed's page on the folder (`""`: the folder picker) and opens it in your default browser; `opened` is false when no browser could be started. A page already open on that folder is shown again |
+| `ShowPage(s run) → b` | opens a page in the browser again, for a lost tab |
+| `FetchLyrics(s folder, a{sv} options) → s run` | `--auto` on a folder inside your music folder (`XDG_MUSIC_DIR` or `~/Music`); option `Romanize` (`b`, else `settings.auto_romanize`) |
+| `Runs() → a(sss)` | the runs still going: run, kind (`page` or `fetch`), the folder it was started on |
+| `Stop(s run)` | as Ctrl+C: the current track finishes first |
+| signal `Finished(s run, i exit_code)` | a run ended, with lyrembed's [exit code](#usage) |
+
+It has no call that runs a command, and a page's address never goes over the bus: its secret token opens everything the page can do, so lyrembed opens the browser itself. A page may open any folder, since you decide on it what is written; an unattended `FetchLyrics` only works inside your music folder. So the interface gives a sandboxed program no way out. A page nobody opens ends after ten minutes. Without calls or runs for five minutes, the service ends, and the bus starts it again at the next call.
+
+```bash
+gdbus call --session -d io.github.sobakah.lyrembed -o /io/github/sobakah/lyrembed \
+  -m io.github.sobakah.lyrembed1.Romanize '[00:01.00]사랑해요' ''
 ```
 
 ---
 
-## Changelog
+## Limitations
 
-See [CHANGELOG.md](CHANGELOG.md).
+* **Han runs of purely shared characters cannot be resolved automatically.** `月光下的思念` and `東京物語` are valid in either reading and fall back to your choice. Roughly four in five runs resolve on their own in typical lyrics; traditional Chinese resolves less often than simplified.
+* **Japanese word spacing is approximate.** Verb and adjective endings stay attached (`愛してる` → `itoshiteru`), but a particle following a Kana-ending compound may be attached too: `ずっと一緒にいたい` → `zutto isshoniitai`.
+* **Kanji readings come from pykakasi** and are not context-aware for names or unusual readings — `君` becomes `kun`, not `kimi`.
+* **Provider credit headers** such as NetEase's `作词 : …` are removed from NetEase and QQ Music lyrics, as are the header tags QQ Music and Megalobiz put above their lyrics (`[ti:]`, `[ar:]`, `[al:]`, `[by:]`, `[length:]`, `[kana:]` and the like; a non-zero `[offset:]` stays) and QQ Music's opening `Title - Artist` line. Typed into other lyrics by hand, they are ignored when detecting scripts but still passed through the conversion.
 
 ---
 

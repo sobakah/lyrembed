@@ -1,6 +1,6 @@
-"""lyrembed on the D-Bus session bus, for Gatefold and other programs.
+"""lyrembed on the D-Bus session bus, for Jewelcase and other programs.
 
-Why: a sandboxed program (Gatefold as a Flatpak) can neither start host
+Why: a sandboxed program (Jewelcase as a Flatpak) can neither start host
 programs nor read lyrembed's config, but it may talk to a bus name it is
 allowed (``--talk-name=io.github.sobakah.lyrembed``). The bus starts this
 service when it is called (a service file in
@@ -9,7 +9,7 @@ so lyrembed can stay a pipx program on the host. cdport has the same
 (its ``dbus_service.py``); the loop and the service file are copied from
 there, not imported: the two programs stay independent.
 
-Everything Gatefold did through the command line and lyrembed's config file
+Everything Jewelcase does through the command line and lyrembed's config file
 has a call. Romanizing runs in this process, as ``romanize --stdio`` does;
 a page and a search for lyrics run as child processes (``lyrembed DIR
 --no-browser`` and ``lyrembed DIR --auto``), whose ends are signalled.
@@ -78,7 +78,7 @@ INTERFACE = "io.github.sobakah.lyrembed1"
 INTERFACE_VERSION = 1
 ERROR = INTERFACE + ".Error"
 # Without runs or calls for this long, the service ends; the bus starts it
-# again at the next call. As long as Gatefold keeps its romanize helper, so
+# again at the next call. As long as Jewelcase keeps its romanize helper, so
 # a song or two apart do not each pay the start (~1 s with pykakasi); not
 # longer, so an old version does not stay after pipx updated lyrembed.
 IDLE_EXIT = 300.0
@@ -184,7 +184,7 @@ class Run:
 
 def page_command(folder: str = "") -> list[str]:
     """The page of the lyrembed this service runs from (pipx launcher or
-    checkout), like Gatefold's `lyrembed DIR --no-browser`."""
+    checkout), like Jewelcase's `lyrembed DIR --no-browser`."""
     from .desktop import launch_command
 
     return [*launch_command(), *([folder] if folder else []), "--no-browser", "--color", "never",
@@ -192,7 +192,7 @@ def page_command(folder: str = "") -> list[str]:
 
 
 def fetch_command(folder: str, romanize: bool | None = None) -> list[str]:
-    """Batch mode on folder, like Gatefold's `lyrembed DIR --auto --color never`."""
+    """Batch mode on folder, like Jewelcase's `lyrembed DIR --auto --color never`."""
     from .desktop import launch_command
 
     flag = [] if romanize is None else ["--romanize" if romanize else "--no-romanize"]

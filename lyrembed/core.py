@@ -314,7 +314,7 @@ def auto_romanize(lyrics: str) -> tuple[str | None, str]:
 
 def romanize_for_display(lyrics: str, han_hint: str | None = None) -> tuple[str | None, str | None, str]:
     """Romanization under each original line, for a player that shows both
-    (Gatefold, through ``lyrembed romanize --stdio``).
+    (Jewelcase, through ``lyrembed romanize --stdio``).
 
     Unlike :func:`auto_romanize` the layout is always "below", whatever the
     config says: the player needs the original to pair the lines, and it

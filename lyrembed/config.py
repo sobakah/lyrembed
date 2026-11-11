@@ -14,7 +14,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-__version__ = "1.2.0"
+__version__ = "1.0.0"
 PROJECT_URL = "https://github.com/sobakah/lyrembed"
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -161,7 +161,8 @@ SETTING_HELP: dict[str, Any] = {
         "prefer_album_artist": "true searches with the album artist instead of the track artist.",
         "search_all_aliases": (
             "true searches every alias of the artist right away. false (default) searches the "
-            "tag's artist first and the aliases only when that finds no synced lyrics, or on 'a'."
+            "tag's artist first and the aliases only when that finds no synced lyrics, or on "
+            "\"Also search as\" in the search results."
         ),
         "color": "Colours in the terminal output (batch mode, messages): \"auto\", \"always\" or \"never\".",
         "check_for_updates": (
@@ -298,7 +299,7 @@ def config_home() -> Path:
 
 
 def legacy_config_path() -> Path:
-    """Where the config lived while the project was called lrckit."""
+    """Where the config lived under the old name, lrckit."""
     return config_home() / "lrckit" / "config.json"
 
 
@@ -316,7 +317,7 @@ def config_search_paths() -> list[Path]:
 
 # Values of the right type can still be unusable: max_workers 0 silently
 # turned LRCLIB off, a negative preview_lines cut lines off the end.
-# (preview_lines went with the terminal menus in 0.8.0; see _RETIRED.)
+# (preview_lines went with the terminal menus; see _RETIRED.)
 _MINIMUMS: dict[tuple[str, str], float] = {
     ("api", "timeout_seconds"): 1,
     ("api", "netease_search_limit"): 1,
@@ -374,7 +375,7 @@ def _invalid_alias_groups(groups: list) -> list[str]:
             if not (isinstance(group, list) and all(isinstance(name, str) for name in group))]
 
 
-# Settings of the terminal menus, which the browser page replaced in 0.8.0.
+# Settings of the terminal menus, which the browser page replaced.
 # A config file may still have them: worth a note, but not "unknown key".
 _RETIRED = {
     ("settings", "default_editor"), ("settings", "preview_lines"), ("settings", "enter_opens_preview"),
@@ -425,7 +426,7 @@ def _validate(merged: dict, user: dict, source: Path) -> list[str]:
         for key, value in values.items():
             if (section, key) in _RETIRED:
                 warnings.append(f"{source}: '{section}.{key}' belonged to the terminal menus, which the "
-                                f"browser page replaced in 0.8.0; it does nothing now and can be removed.")
+                                f"browser page replaced; it does nothing now and can be removed.")
             elif key not in default_section:
                 warnings.append(f"{source}: unknown key '{section}.{key}' is ignored.")
             elif not _matches_type(value, default_section[key]):

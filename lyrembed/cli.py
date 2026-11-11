@@ -48,7 +48,7 @@ def build_parser() -> argparse.ArgumentParser:
     desktop_entry.add_argument("--remove-desktop-entry", action="store_true",
                                help="remove lyrembed from the app menu, then exit")
 
-    bus = parser.add_argument_group("D-Bus (for Gatefold and other programs, also from a Flatpak)")
+    bus = parser.add_argument_group("D-Bus (for Jewelcase and other programs, also from a Flatpak)")
     service = bus.add_mutually_exclusive_group()
     service.add_argument("--install-dbus-service", action="store_true",
                          help="let the session bus start this lyrembed when a program calls it, then exit")
