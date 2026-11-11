@@ -298,17 +298,9 @@ def config_home() -> Path:
     return Path(xdg) if xdg else Path.home() / ".config"
 
 
-def legacy_config_path() -> Path:
-    """Where the config lived under the old name, lrckit."""
-    return config_home() / "lrckit" / "config.json"
-
-
 def config_search_paths() -> list[Path]:
-    """The user's config comes first, then the one from the lrckit days, so an
-    existing setup keeps working after the rename (load_config says to move
-    it). A ``config.json`` in a source checkout is still honoured last, for
-    setups that predate the XDG location."""
-    paths = [config_home() / "lyrembed" / "config.json", legacy_config_path()]
+    """The user's config, then a ``config.json`` in a source checkout."""
+    paths = [config_home() / "lyrembed" / "config.json"]
     checkout = Path(__file__).resolve().parent.parent
     if (checkout / "pyproject.toml").is_file():
         paths.append(checkout / "config.json")
@@ -484,9 +476,6 @@ def load_config(explicit_path: Path | None = None) -> tuple[dict, list[str]]:
             continue
         merged = _deep_merge(DEFAULT_CONFIG, loaded)
         warnings += _validate(merged, loaded, path)
-        if path == legacy_config_path():
-            warnings.append(f"{path} is the config location from before the rename to lyrembed; "
-                            f"move it to {config_search_paths()[0]}.")
         merged["_source"] = str(path)
         return merged, warnings
 

@@ -221,8 +221,6 @@ hard to spot.
   `api.user_agent` is not offered: a saved copy would freeze the version.
 - **Retired settings get a note, not "unknown key"**: `config._RETIRED` (the terminal menus'
   `default_editor`, `preview_lines`, `enter_opens_preview`).
-- **The old config location is still read**: `config.legacy_config_path` (`~/.config/lrckit/`,
-  an old name), with a note to move it. Keep the code; user docs don't mention it.
 
 **The page and its server**
 

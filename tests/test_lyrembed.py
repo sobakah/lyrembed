@@ -1520,22 +1520,6 @@ def test_syncedlyrics_skips_the_sources_lyrembed_asks_itself(cfg, monkeypatch):
     assert seen == [["Musixmatch", "Genius"]]
 
 
-def test_config_from_before_the_rename_is_still_read(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path))
-    legacy = tmp_path / "lrckit" / "config.json"
-    legacy.parent.mkdir()
-    legacy.write_text('{"settings": {"search_cache_entries": 5}}', encoding="utf-8")
-    merged, warnings = config.load_config(None)
-    assert merged["settings"]["search_cache_entries"] == 5
-    assert any("move it to" in w and "lyrembed" in w for w in warnings)
-
-    current = tmp_path / "lyrembed" / "config.json"
-    current.parent.mkdir()
-    current.write_text('{"settings": {"search_cache_entries": 7}}', encoding="utf-8")
-    merged, warnings = config.load_config(None)
-    assert merged["settings"]["search_cache_entries"] == 7 and warnings == []
-
-
 # batch romanization
 def _batch_track(tmp_path: Path, monkeypatch, text_found: str) -> Path:
     """A taggable FLAC whose automatic search finds text_found."""
