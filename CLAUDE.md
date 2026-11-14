@@ -28,6 +28,16 @@ share its look (libadwaita's design language): `static/base.css` and `static/ico
 lyrembed's, copied unchanged into cdport, keepbest and media-optimizer; change them in lyrembed and
 copy them back. Setup details of the owner's machine are in `CLAUDE.local.md` (not in git).
 
+On image-based systems (Fedora Silverblue, Bluefin) the programs run on the host where the image
+has what they need (pipx from its zipapp, or layered with `rpm-ostree`); cdport runs in a toolbox,
+where cyanrip can be built, and Jewelcase comes as a Flatpak bundle on its releases. In a toolbox
+or distrobox, what the host starts (app-menu entry, D-Bus service) enters the container, and what
+a program opens in other apps (browser, Flatpaks, file manager) leaves it: `container.py`,
+lyrembed's, copied unchanged into cdport, keepbest and media-optimizer; picktag's
+`core/desktop.py`. The suites of the four make no container unless a test asks (an autouse
+fixture), so they run alike in a toolbox. Each README has a section *Fedora Silverblue, Bluefin
+and other image-based systems* under its installation.
+
 ### Working rules
 
 - **Commits**: commit finished work once its tests pass, locally, on the default branch;
@@ -112,6 +122,9 @@ lyrembed/
   config.py              Version, defaults, setting explanations, config merging, alias loading
   desktop.py             The app-menu entry (freedesktop.org), written on request
   dbus_service.py        The D-Bus interface (--dbus) and its service file
+  container.py           Toolbox and distrobox: what the host starts enters the container, what
+                         lyrembed opens leaves it; copied unchanged into cdport, keepbest and
+                         media-optimizer (see the family block)
   aliases.json           Built-in artist alias groups (package data)
 config.example.json      Generated from config.py (see Conventions)
 tests/test_lyrembed.py   pytest suite

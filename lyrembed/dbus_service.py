@@ -64,13 +64,12 @@ import subprocess
 import threading
 import time
 import traceback
-import webbrowser
 import xml.etree.ElementTree as ElementTree
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from . import config, core, text, ui, web
+from . import config, container, core, text, ui, web
 
 BUS_NAME = "io.github.sobakah.lyrembed"
 OBJECT_PATH = "/io/github/sobakah/lyrembed"
@@ -230,7 +229,7 @@ class Service:
 
     def __init__(self, spawn: Callable[[list[str]], Any] = spawn_run,
                  clock: Callable[[], float] = time.monotonic,
-                 open_url: Callable[[str], bool] = webbrowser.open) -> None:
+                 open_url: Callable[[str], bool] = container.open_url) -> None:
         self.runs: dict[str, Run] = {}
         self.events: queue.Queue[tuple] = queue.Queue()
         self._spawn = spawn
@@ -628,9 +627,11 @@ def service_file_text(command: list[str]) -> str:
 def install_service_file() -> tuple[Path, list[str], str | None]:
     """Write the service file for the lyrembed that runs this; returns its
     path, the command, and why the bus could not be told (None when it was)."""
+    from . import container
     from .desktop import launch_command
 
-    command = launch_command()
+    # In a toolbox or distrobox the bus on the host starts the service.
+    command = container.on_host(launch_command())
     path = service_file_path()
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(service_file_text(command), encoding="utf-8")

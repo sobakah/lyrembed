@@ -28,6 +28,31 @@ def no_update_check(monkeypatch, tmp_path):
     monkeypatch.setattr(selfupdate, "latest", offline)
 
 
+@pytest.fixture(autouse=True)
+def not_in_a_container(monkeypatch, tmp_path):
+    """The suite runs alike on the host and in a toolbox: no container,
+    unless a test makes one (toolbox)."""
+    from lyrembed import container
+    for name in ("TOOLBOX_ENV", "CONTAINER_ENV", "HOST_ROOT", "OSTREE_BOOTED"):
+        monkeypatch.setattr(container, name, tmp_path / f"not-{name.lower()}")
+    monkeypatch.delenv("CONTAINER_ID", raising=False)
+
+
+@pytest.fixture
+def toolbox(monkeypatch, tmp_path):
+    """Running in a toolbox called "my box", with toolbox in the host's /usr/bin."""
+    from lyrembed import container
+    (tmp_path / "toolboxenv").touch()
+    (tmp_path / "containerenv").write_text('engine="podman-5.6"\nname="my box"\nid="abc"\n')
+    host_bin = tmp_path / "host" / "usr" / "bin"
+    host_bin.mkdir(parents=True)
+    (host_bin / "toolbox").touch()
+    monkeypatch.setattr(container, "TOOLBOX_ENV", tmp_path / "toolboxenv")
+    monkeypatch.setattr(container, "CONTAINER_ENV", tmp_path / "containerenv")
+    monkeypatch.setattr(container, "HOST_ROOT", tmp_path / "host")
+    return container
+
+
 # --- config merging ----------------------------------------------------------
 def test_partial_user_config_keeps_defaults(tmp_path):
     path = tmp_path / "config.json"
@@ -3763,3 +3788,48 @@ def test_dbus_on_a_real_bus_started_by_the_bus(tmp_path, monkeypatch):
     finally:
         bus.terminate()
         bus.wait(10)
+
+
+# --- toolbox and distrobox (Fedora Silverblue, Bluefin) ------------------------
+def test_in_a_toolbox_the_menu_entry_and_the_service_enter_it(toolbox, tmp_path, monkeypatch):
+    """The desktop and the session bus read these files on the host, where
+    the container's Python and packages aren't."""
+    from lyrembed import desktop, dbus_service
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setattr(desktop, "_refresh", lambda folder: None)
+    monkeypatch.setattr(dbus_service, "_reload_bus", lambda: None)
+    shim = tmp_path / "bin" / "lyrembed"
+    shim.parent.mkdir()
+    shim.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [str(shim)])
+    entry, _, command = desktop.install()
+    assert command == ["/usr/bin/toolbox", "run", "--container", "my box", str(shim)]
+    assert f'Exec=/usr/bin/toolbox run --container "my box" {shim} %f\n' in entry.read_text()
+    path, command, _ = dbus_service.install_service_file()
+    assert f"Exec=/usr/bin/toolbox run --container 'my box' {shim} --dbus\n" in path.read_text()
+
+
+def test_in_a_distrobox_the_entry_enters_it(tmp_path, monkeypatch):
+    from lyrembed import container
+    monkeypatch.setenv("CONTAINER_ID", "arch")
+    assert container.on_host(["/x/lyrembed"]) == ["distrobox-enter", "-n", "arch", "--", "/x/lyrembed"]
+    monkeypatch.setattr(container.shutil, "which", lambda name: None)
+    assert container.host_command(["xdg-open", "u"]) == ["distrobox-host-exec", "xdg-open", "u"]
+
+
+def test_in_a_toolbox_the_page_opens_in_the_hosts_browser(toolbox, monkeypatch):
+    """A toolbox has no xdg-open: Python's webbrowser asks gio there, which
+    finds no browser and still reports success."""
+    started = []
+    monkeypatch.setattr(toolbox.subprocess, "Popen", lambda argv, **kw: started.append(argv))
+    monkeypatch.setattr(toolbox.webbrowser, "open", lambda url: pytest.fail("webbrowser in a container"))
+    assert toolbox.open_url("http://127.0.0.1:1/") is True
+    assert started == [["flatpak-spawn", "--host", "xdg-open", "http://127.0.0.1:1/"]]
+
+
+def test_outside_a_container_nothing_changes(monkeypatch):
+    from lyrembed import container
+    monkeypatch.setattr(container.webbrowser, "open", lambda url: url == "http://x/")
+    assert container.on_host(["a"]) == ["a"] and container.host_command(["a"]) == ["a"]
+    assert container.flatpak_on_host(["flatpak", "run", "x"]) == ["flatpak", "run", "x"]
+    assert container.open_url("http://x/") is True and container.container() is None

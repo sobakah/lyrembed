@@ -45,6 +45,25 @@ pip install -e ".[all]"
 
 The checkout also runs without installation: `./run.py ~/Music/Artist/Album`. `run.py` is only a launcher and needs the `lyrembed/` package folder next to it.
 
+### Fedora Silverblue, Bluefin and other image-based systems
+
+lyrembed runs on the host: Silverblue's image has Python, git and ffmpeg, only pipx is missing.
+pipx installs itself without changing the image:
+
+```bash
+curl -LO https://github.com/pypa/pipx/releases/latest/download/pipx.pyz
+python3 pipx.pyz install pipx && rm pipx.pyz
+~/.local/bin/pipx install "lyrembed[all] @ git+https://github.com/sobakah/lyrembed.git"
+```
+
+(`rpm-ostree install pipx` and a restart work too.) cdport runs in a toolbox there (its README
+says why). To import CDs from lyrembed's page, make lyrembed's app menu entry and D-Bus service
+in cdport's toolbox (`lyrembed --install-desktop-entry`, `lyrembed --install-dbus-service`
+inside it): they then start lyrembed in the container (`toolbox run --container NAME …`), where
+*Import a CD* finds cdport, and its page opens in the host's browser. pipx's folders are in the
+home folder, which the host and its toolboxes share, so one install serves both while they run
+the same Fedora version.
+
 ### Dependencies
 
 Required: Python 3.10 or newer, `mutagen`, `requests`, and a current browser (Firefox, Chrome, Edge, Safari). `jeepney` is installed with them for the [D-Bus interface](#d-bus); without it only that is missing.

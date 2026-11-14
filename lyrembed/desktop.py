@@ -15,6 +15,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from . import container
+
 ICON_SOURCE = Path(__file__).with_name("static") / "icon.svg"
 ENTRY_NAME = "lyrembed.desktop"
 
@@ -102,7 +104,8 @@ def install() -> tuple[Path, Path, list[str]]:
     """Write the icon and the entry; returns their paths and the command."""
     if not supported():
         raise DesktopError("App-menu entries are written for Linux and BSD desktops only.")
-    command = launch_command()
+    # In a toolbox or distrobox the desktop reads the entry on the host.
+    command = container.on_host(launch_command())
     entry, icon = entry_path(), icon_path()
     try:
         icon.parent.mkdir(parents=True, exist_ok=True)

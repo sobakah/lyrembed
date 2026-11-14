@@ -22,12 +22,11 @@ import sys
 import tempfile
 import threading
 import time
-import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from . import config, core, providers, selfupdate, tagging, text, ui
+from . import config, container, core, providers, selfupdate, tagging, text, ui
 from .providers import Candidate, CachedSearch, SearchReport
 from .tagging import MetadataCache, TaggingError, TrackMeta
 
@@ -1324,7 +1323,7 @@ def serve(session: WebSession, open_browser: bool = True, port: int = 0, token: 
         # The first line's wording is read by cdport (web._HANDOFF there) and
         # by dbus_service (_PAGE).
         ui.info(RUNNING_LINE.format(url=url))
-        opened = open_browser and webbrowser.open(url)
+        opened = open_browser and container.open_url(url)
         if session.return_url:
             ui.info(f"Its Done button ends lyrembed and goes back to {session.return_name or 'the previous page'}.")
         else:

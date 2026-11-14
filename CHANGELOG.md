@@ -6,6 +6,13 @@ All notable changes to lyrembed are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Fedora Silverblue, Bluefin and other image-based systems:** lyrembed runs on the host with
+  pipx, or in a toolbox or distrobox, whose app menu entry and D-Bus service start it in the
+  container; from there the page opens in the host's browser. The README has a section for
+  these systems.
+
 ## [1.0.0] — 2026-11-11
 
 The first release. lyrembed finds synchronized and plain lyrics for an album, checks that they
