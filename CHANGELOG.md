@@ -6,6 +6,8 @@ All notable changes to lyrembed are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.1] — 2026-11-14
+
 ### Added
 
 - **Fedora Silverblue, Bluefin and other image-based systems:** lyrembed runs on the host with
@@ -67,5 +69,6 @@ reach; `--auto` tags a whole folder in the terminal without asking.
 - **Installing**: `pipx install "lyrembed[all] @ git+https://github.com/sobakah/lyrembed.git"`;
   Python 3.10 or newer, ffmpeg optional for Apple Lossless.
 
-[Unreleased]: https://github.com/sobakah/lyrembed/compare/1.0.0...HEAD
+[Unreleased]: https://github.com/sobakah/lyrembed/compare/1.0.1...HEAD
+[1.0.1]: https://github.com/sobakah/lyrembed/compare/1.0.0...1.0.1
 [1.0.0]: https://github.com/sobakah/lyrembed/releases/tag/1.0.0
