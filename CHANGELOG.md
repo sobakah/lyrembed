@@ -6,6 +6,13 @@ All notable changes to lyrembed are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- A page or lyrics search started over D-Bus just as the idle service was ending could no longer
+  be shown or stopped.
+- While the D-Bus service waited for its runs after Ctrl+C, calls to it waited for their
+  timeout; they now start a new service.
+
 ## [1.0.1] — 2026-11-14
 
 ### Added

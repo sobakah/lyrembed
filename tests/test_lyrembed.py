@@ -3680,6 +3680,50 @@ def test_dbus_answers_what_came_while_it_let_go_of_its_name():
     assert bus.sent[2].header.fields[HeaderFields.reply_serial] == 7
 
 
+def test_dbus_a_run_started_while_letting_go_of_the_name_takes_it_back(tmp_path):
+    """A call routed here just before the bus confirmed the release starts a run:
+    the name comes back, or Stop and ShowPage would reach a new lyrembed."""
+    pytest.importorskip("jeepney")
+    from jeepney import DBusAddress, HeaderFields, MessageType, new_method_call
+
+    call = new_method_call(DBusAddress(dbus_service.OBJECT_PATH, dbus_service.BUS_NAME, dbus_service.INTERFACE),
+                           "OpenPage", "s", (str(tmp_path),))
+    call.header.serial = 7
+    process = FakeRun([PAGE_LINE])
+    service = bus_service(process)
+    bus = FakeBus(after=[call], end=TimeoutError())
+    threading.Timer(1.0, process.release.set).start()
+    assert dbus_service._answer(bus, service, idle_exit=-1) == 0
+    members = [m.header.fields.get(HeaderFields.member) for m in bus.sent
+               if m.header.message_type == MessageType.method_call]
+    assert members == ["RequestName", "ReleaseName", "RequestName", "ReleaseName"]
+    replies = [m for m in bus.sent if m.header.fields.get(HeaderFields.reply_serial) == 7]
+    assert replies[0].body == ("1", True)
+
+
+def test_dbus_lets_go_of_its_name_before_waiting_for_its_runs(tmp_path, monkeypatch):
+    pytest.importorskip("jeepney")
+    import contextlib
+    import jeepney.io.blocking
+    from jeepney import HeaderFields
+
+    class Conn(contextlib.nullcontext):
+        sent = []
+
+        def send(self, message, serial=None):
+            self.sent.append(message)
+    process = FakeRun([PAGE_LINE])
+    service = bus_service(process)
+    service.call("OpenPage", "s", (str(tmp_path),), "call")
+    drain(service)
+    monkeypatch.setattr(jeepney.io.blocking, "open_dbus_connection", lambda bus: Conn())
+    monkeypatch.setattr(dbus_service, "_answer", lambda conn, service, idle_exit: 0)   # the bus went away
+    threading.Timer(0.3, process.release.set).start()
+    assert dbus_service.serve(service) == 0
+    assert [m.header.fields.get(HeaderFields.member) for m in Conn.sent] == ["ReleaseName"]
+    assert service.runs == {}
+
+
 def test_dbus_waits_for_its_runs_before_it_ends(tmp_path):
     process = FakeRun([PAGE_LINE])
     service = bus_service(process)

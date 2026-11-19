@@ -489,7 +489,20 @@ def serve(service: Service | None = None, idle_exit: float = IDLE_EXIT) -> int:
                 service._interrupt(run)
             return 130
         finally:
+            if service.runs:
+                _let_go(conn)
             _outlive_runs(service)
+
+
+def _let_go(conn: Any) -> None:
+    """Give up the name before waiting for the runs: this process answers no more
+    calls, so the bus starts a new lyrembed for the next one instead of letting it wait."""
+    try:
+        from jeepney.bus_messages import message_bus
+
+        conn.send(message_bus.ReleaseName(BUS_NAME))
+    except Exception:   # the bus may be gone already
+        pass
 
 
 def _outlive_runs(service: Service) -> None:
@@ -540,7 +553,24 @@ def _answer(conn: Any, service: Service, idle_exit: float) -> int:
     last = time.monotonic()
     releasing: int | None = None   # the ReleaseName's serial, once sent
     released = False
+    lost = False                   # another lyrembed has the name now
     while True:
+        if released and service.busy() and not lost:
+            # A call came while the name was being given up and started a run: take
+            # the name back, so the run can still be shown and stopped.
+            try:
+                owner, early = _request_name(conn, message_bus.RequestName(BUS_NAME, 4))
+            except (OSError, EOFError, ValueError, TimeoutError) as exc:
+                ui.error(f"lyrembed: could not take the name {BUS_NAME} back: {exc}")
+                owner, early = 0, []
+            inbox.extend(early)
+            if owner in (1, 4):
+                releasing, released = None, False
+                last = time.monotonic()
+            else:
+                lost = True
+                ui.warn(f"lyrembed: another lyrembed has {BUS_NAME} now; the runs here go on, "
+                        "but can't be shown or stopped over D-Bus.")
         for item in service.outgoing():
             if item[0] == "return":
                 _send(conn, lambda i=item: new_method_return(i[1], i[2], i[3]), item[1])
