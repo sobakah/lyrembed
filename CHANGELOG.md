@@ -6,6 +6,13 @@ All notable changes to lyrembed are documented here. The format follows
 
 ## [Unreleased]
 
+## [1.0.2] — 2026-11-19
+
+### Added
+
+- **`--install`** writes the app menu entry and the D-Bus service in one go, **`--uninstall`**
+  removes both again (before `pipx uninstall lyrembed`).
+
 ### Fixed
 
 - A page or lyrics search started over D-Bus just as the idle service was ending could no longer

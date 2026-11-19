@@ -3548,6 +3548,47 @@ def test_dbus_service_file_starts_this_lyrembed(tmp_path, monkeypatch, capsys, c
     assert cli.main(["--remove-dbus-service"]) == 0 and "There was no" in capsys.readouterr().out
 
 
+@pytest.fixture
+def installing(tmp_path, monkeypatch, cfg):
+    """--install and --uninstall in the test's own data folder, without a bus or a menu to refresh."""
+    from lyrembed import desktop
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setattr(dbus_service, "_reload_bus", lambda: None)
+    monkeypatch.setattr(desktop, "_refresh", lambda folder: None)
+    shim = tmp_path / "bin" / "lyrembed"
+    shim.parent.mkdir()
+    shim.write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [str(shim)])
+    return desktop.entry_path(), desktop.icon_path(), dbus_service.service_file_path()
+
+
+def test_install_and_uninstall_do_the_app_menu_entry_and_the_dbus_service(installing, capsys):
+    entry, icon, service = installing
+    assert cli.main(["--install"]) == 0
+    assert entry.is_file() and icon.is_file() and service.is_file()
+    assert cli.main(["--uninstall"]) == 0
+    assert not entry.exists() and not icon.exists() and not service.exists()
+    capsys.readouterr()
+    assert cli.main(["--uninstall"]) == 0
+    out = capsys.readouterr().out
+    assert "There was no app-menu entry." in out and "There was no D-Bus service file." in out
+
+
+def test_uninstall_removes_the_service_also_when_the_entry_cannot_go(installing, capsys):
+    entry, _, service = installing
+    assert cli.main(["--install-dbus-service"]) == 0
+    entry.mkdir(parents=True)                        # can't be unlinked
+    assert cli.main(["--uninstall"]) == 2
+    assert not service.exists() and "Could not remove" in "".join(capsys.readouterr())
+
+
+def test_install_and_uninstall_go_alone():
+    for argv in (["--install", "--uninstall"], ["--dbus", "--install"]):
+        with pytest.raises(SystemExit):
+            cli.parse_args(argv)
+
+
 def test_dbus_takes_no_other_options():
     assert cli.parse_args(["--dbus", "-v"]).dbus
     for argv in (["~/Music/Album", "--dbus"], ["--dbus", "--auto"], ["--dbus", "--config", "my.json"]):

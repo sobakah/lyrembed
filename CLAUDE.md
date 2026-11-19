@@ -319,7 +319,12 @@ imported; the calls are in its docstring and the README)
   `ServiceError`, or a reply jeepney cannot serialise, is answered with
   `org.freedesktop.DBus.Error.Failed`, traceback on stderr.
 - Idle, the loop sends `ReleaseName` and ends only once that is answered and nothing came
-  meanwhile (a call routed here just before would go unanswered).
+  meanwhile (a call routed here just before would go unanswered). A call that started a run
+  meanwhile takes the name back (`RequestName` again), or Stop/ShowPage would reach a new
+  lyrembed. When the loop ends with runs going (Ctrl+C, the bus gone), `_let_go` releases the
+  name before `_outlive_runs` waits, so calls start a new service instead of timing out.
+- `--install` / `--uninstall` = `--install-desktop-entry` and `--install-dbus-service` (or their
+  removal), both tried, the worse exit code.
 - `--install-dbus-service` writes `~/.local/share/dbus-1/services/io.github.sobakah.lyrembed.service`
   (`Exec=` the launcher plus `--dbus`) and asks the bus to `ReloadConfig` (dbus-broker needs it).
 

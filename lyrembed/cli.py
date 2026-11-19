@@ -56,6 +56,14 @@ def build_parser() -> argparse.ArgumentParser:
     service.add_argument("--dbus", action="store_true",
                          help="serve the D-Bus interface until idle (what the bus starts)")
 
+    both = parser.add_argument_group("app menu and D-Bus together")
+    setup = both.add_mutually_exclusive_group()
+    setup.add_argument("--install", action="store_true",
+                       help="both of --install-desktop-entry and --install-dbus-service, then exit")
+    setup.add_argument("--uninstall", action="store_true",
+                       help="remove what --install wrote, then exit (lyrembed itself stays: "
+                            "pipx uninstall lyrembed removes it)")
+
     batch = parser.add_argument_group("batch mode")
     batch.add_argument("--auto", action="store_true", help="tag every track with a confident match, without prompting")
     batch.add_argument("--overwrite", action="store_true", help="in --auto mode, also replace existing lyrics (backed up first)")
@@ -215,6 +223,12 @@ def _desktop_entry(install: bool) -> int:
     return 0
 
 
+def _install(install: bool) -> int:
+    """--install / --uninstall: the app-menu entry and the D-Bus service; both are
+    tried, and the exit code is the worse one."""
+    return max(_desktop_entry(install), _dbus_service(install))
+
+
 def _dbus_service(install: bool) -> int:
     from . import dbus_service
 
@@ -319,6 +333,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_aliases:
         print_aliases()
         return 0
+    if args.install or args.uninstall:
+        return _install(install=args.install)
     if args.install_desktop_entry or args.remove_desktop_entry:
         return _desktop_entry(install=args.install_desktop_entry)
     if args.install_dbus_service or args.remove_dbus_service:

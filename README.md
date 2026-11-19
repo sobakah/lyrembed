@@ -31,7 +31,7 @@ pipx install git+https://github.com/sobakah/lyrembed.git
 pipx install "lyrembed[all] @ git+https://github.com/sobakah/lyrembed.git"
 ```
 
-This installs a `lyrembed` command on your `PATH`. The page tells you about a newer release and installs it for you (see `check_for_updates` under [Configuration](#configuration)); `pipx upgrade lyrembed` does the same by hand.
+This installs a `lyrembed` command on your `PATH`. The page tells you about a newer release and installs it for you (see `check_for_updates` under [Configuration](#configuration)); `pipx upgrade lyrembed` does the same by hand. `lyrembed --install` adds the [app menu entry](#app-menu) and the [D-Bus service](#d-bus) other programs use; `lyrembed --uninstall` removes both again, before `pipx uninstall lyrembed`.
 
 > **fish users:** `pipx` and `pip install --user` place their launchers in `~/.local/bin`. On Fedora that folder is added to `PATH` by `~/.bash_profile`, which fish never reads — so the install succeeds but `lyrembed` is not found. Add it once with `fish_add_path ~/.local/bin` (fish 3.2+); it persists across sessions. In a virtual environment, use `source venv/bin/activate.fish` rather than `activate`.
 
@@ -58,8 +58,7 @@ python3 pipx.pyz install pipx && rm pipx.pyz
 
 (`rpm-ostree install pipx` and a restart work too.) cdport runs in a toolbox there (its README
 says why). To import CDs from lyrembed's page, make lyrembed's app menu entry and D-Bus service
-in cdport's toolbox (`lyrembed --install-desktop-entry`, `lyrembed --install-dbus-service`
-inside it): they then start lyrembed in the container (`toolbox run --container NAME …`), where
+in cdport's toolbox (`lyrembed --install` inside it): they then start lyrembed in the container (`toolbox run --container NAME …`), where
 *Import a CD* finds cdport, and its page opens in the host's browser. pipx's folders are in the
 home folder, which the host and its toolboxes share, so one install serves both while they run
 the same Fedora version.
@@ -115,6 +114,8 @@ Without `--auto`, lyrembed opens its page in your default browser and prints the
 | `--remove-desktop-entry` | Remove it again, then exit |
 | `--install-dbus-service` | Let the session bus start lyrembed when a program calls it, then exit; see [D-Bus](#d-bus) |
 | `--remove-dbus-service` | Remove that again, then exit |
+| `--install` | Both: the app menu entry and the D-Bus service, then exit |
+| `--uninstall` | Remove what `--install` wrote, then exit; lyrembed itself stays (`pipx uninstall lyrembed` removes it) |
 | `--dbus` | Serve the D-Bus interface until idle (what the session bus starts) |
 | `--auto` | Batch mode: tag confident matches without a page and without prompting |
 | `--overwrite` | With `--auto`, also replace existing lyrics; the old ones are backed up to `$XDG_STATE_HOME/lyrembed/backups/<time>/` (default `~/.local/state/…`) |
@@ -136,7 +137,7 @@ Exit codes: `0` success or quit, `1` some files failed in batch mode, `2` unusab
 lyrembed --install-desktop-entry
 ```
 
-adds lyrembed to the app menu of GNOME, KDE and other freedesktop.org desktops: `~/.local/share/applications/lyrembed.desktop` and an icon under `~/.local/share/icons/`. The entry starts the lyrembed that wrote it — a pipx installation, or the Python and `run.py` of a checkout — so run the command again after installing lyrembed somewhere else. Started from the menu, the page opens in your default browser with the folder picker in your music folder (`XDG_MUSIC_DIR`). `--remove-desktop-entry` removes both files.
+adds lyrembed to the app menu of GNOME, KDE and other freedesktop.org desktops: `~/.local/share/applications/lyrembed.desktop` and an icon under `~/.local/share/icons/`. The entry starts the lyrembed that wrote it — a pipx installation, or the Python and `run.py` of a checkout — so run the command again after installing lyrembed somewhere else. Started from the menu, the page opens in your default browser with the folder picker in your music folder (`XDG_MUSIC_DIR`). `--remove-desktop-entry` removes both files. `lyrembed --install` writes the entry and the [D-Bus service](#d-bus) together, `lyrembed --uninstall` removes both.
 
 ---
 
