@@ -636,20 +636,140 @@ def _release_track(tracks: list[providers.ReleaseTrack], meta: TrackMeta
     return None, f"MusicBrainz's album has no track {disc}-{meta.track_number}"
 
 
+# A search for an album without a usable ID: how many of the best-scoring
+# releases are fetched to compare with the files, and how far a track's
+# length may be from the file's.
+_SEARCH_LOOKUPS = 4
+_LENGTH_TOLERANCE_S = 3
+
+
+def _searched_track(tracks: list[providers.ReleaseTrack], meta: TrackMeta
+                    ) -> tuple[providers.ReleaseTrack, bool] | None:
+    """The one track of a searched release that is this file, and whether
+    its title fits too. Stricter than with an album ID, since nothing but
+    the search says it is the right album: the same number (and disc, where
+    the release has several) and a length within the tolerance; a title that
+    does not fit (translated: 'Scavengers' / 'Мусорщики') only with both
+    lengths known and a track number, and the caller wants most titles to fit.
+    """
+    if not meta.title:
+        return None
+    discs = {track.disc for track in tracks}
+    fitting = []
+    for track in tracks:
+        if meta.track_number and track.number != meta.track_number:
+            continue
+        if meta.disc_number and len(discs) > 1 and track.disc != meta.disc_number:
+            continue
+        lengths_known = bool(meta.duration and track.length_ms)
+        if lengths_known and abs(meta.duration - track.length_ms / 1000) > _LENGTH_TOLERANCE_S:
+            continue
+        if text.matches_title(meta.title, track.title):
+            fitting.append((track, True))
+        elif lengths_known and meta.track_number:
+            fitting.append((track, False))
+    by_title = [f for f in fitting if f[1]]
+    if len(by_title) == 1:
+        return by_title[0]
+    return fitting[0] if len(fitting) == 1 else None
+
+
+def _fits_release(tracks: list[providers.ReleaseTrack], group: list[TrackMeta]
+                  ) -> dict[Path, providers.ReleaseTrack] | None:
+    """Each file's track when every file of the album fits the release and
+    more than half of them by title too (a single needs its title)."""
+    matched = {meta.path: _searched_track(tracks, meta) for meta in group}
+    if not all(matched.values()):
+        return None
+    if sum(1 for _, by_title in matched.values() if not by_title) * 2 >= len(group):
+        return None
+    return {path: track for path, (track, _) in matched.items()}
+
+
+@dataclass
+class _Search:
+    """What searching for one album found: the release that fits all its
+    files and each file's track, or why there is none."""
+
+    release: providers.FoundRelease | None = None
+    tracks: dict[Path, providers.ReleaseTrack] = field(default_factory=dict)
+    reason: str = ""
+    failed: bool = False
+
+
+def _album_artist(meta: TrackMeta) -> str:
+    return meta.album_artist or meta.artist
+
+
 def isrcs(files: list[Path], cache: MetadataCache, dry_run: bool) -> Iterator[Step]:
     """Add the ISRCs MusicBrainz knows to tracks that have none.
 
     A track is found by the release ID Picard writes (MUSICBRAINZ_ALBUMID):
     one request per album, whatever the number of its tracks, paced by
-    providers to one a second. An ISRC the file already has is never
-    replaced, so nothing needs a backup.
+    providers to one a second. An album without a usable ID (none, or one
+    MusicBrainz has no release for, such as a release group's) is searched
+    for by its title and album artist, and a release is only taken when
+    every track of the album in the folder fits it. An ISRC the file already
+    has is never replaced, so nothing needs a backup.
     """
     # Per run, so a second run sees what was added on MusicBrainz meanwhile:
     # the release's tracks, None for an unknown release, or the error.
     releases: dict[str, list[providers.ReleaseTrack] | None | str] = {}
+    searches: dict[tuple, _Search] = {}
+    # The tracks a search must fit: those of the run still without an ISRC,
+    # by folder, album and album artist.
+    albums: dict[tuple, list[TrackMeta]] = {}
+    metas = {path: cache.get(path) for path in files}
+    for meta in metas.values():
+        if not meta.error and not meta.isrc:
+            albums.setdefault(_album_key(meta), []).append(meta)
+
+    def release_tracks(release_id: str) -> list[providers.ReleaseTrack] | None | str:
+        if release_id not in releases:
+            try:
+                releases[release_id] = providers.musicbrainz_release(release_id)
+            except (requests.RequestException, ValueError) as exc:
+                releases[release_id] = f"MusicBrainz lookup failed: {exc}"
+        return releases[release_id]
+
+    def search(prefix: str, meta: TrackMeta, release_group: str) -> Iterator[Step]:
+        """Fills searches[key] for meta's album, as steps (each request
+        runs when the step after its Searching is asked for)."""
+        key = (_album_key(meta), release_group)
+        if key in searches:
+            return
+        group = albums.get(_album_key(meta), [meta])
+        result = searches[key] = _Search()
+        if not release_group and not (meta.album and _album_artist(meta)):
+            result.reason = "no album and album artist to search MusicBrainz for"
+            return
+        yield Searching(prefix, "searching MusicBrainz")
+        try:
+            found = providers.musicbrainz_search_releases(meta.album, _album_artist(meta), release_group)
+        except (requests.RequestException, ValueError) as exc:
+            result.reason, result.failed = f"MusicBrainz search failed: {exc}", True
+            return
+        candidates = [r for r in found if r.track_count >= len(group)][:_SEARCH_LOOKUPS]
+        for candidate in candidates:
+            if candidate.id not in releases:
+                yield Searching(prefix, "asking MusicBrainz")
+            tracks = release_tracks(candidate.id)
+            if isinstance(tracks, str):
+                result.reason, result.failed = tracks, True
+                return
+            matched = _fits_release(tracks or [], group)
+            if matched:
+                result.release, result.tracks = candidate, matched
+                yield Notice(prefix, f"{len(group)} track{'' if len(group) == 1 else 's'} of "
+                                     f"'{meta.album}' found on MusicBrainz as {candidate.label}: {candidate.url}")
+                return
+        what = "the release group's releases" if release_group else \
+            f"'{meta.album}' by {_album_artist(meta)}"
+        result.reason = (f"no MusicBrainz release of {what} fits all {len(group)} of its tracks here"
+                         if candidates else f"MusicBrainz found no release of {what}")
 
     for index, path in enumerate(files, 1):
-        meta = cache.get(path)
+        meta = metas[path]
         prefix = f"[{index}/{len(files)}] {meta.label}"
 
         def outcome(result: str, message: str, **kwargs) -> Outcome:
@@ -661,40 +781,48 @@ def isrcs(files: list[Path], cache: MetadataCache, dry_run: bool) -> Iterator[St
         if meta.isrc:
             yield outcome("skipped", f"has the ISRC {meta.isrc}, skipped.")
             continue
+
         album = meta.album_id.lower()
+        why_search = ""
+        release_group = ""
         if not album:
-            yield outcome("skipped", "no MusicBrainz album ID (MusicBrainz Picard writes one), skipped.",
-                          notable=True)
-            continue
-        if not providers.is_musicbrainz_id(album):
-            yield outcome("skipped", f"the MusicBrainz album ID '{meta.album_id}' is no valid ID, skipped.",
-                          notable=True)
-            continue
+            why_search = "no MusicBrainz album ID"
+        elif not providers.is_musicbrainz_id(album):
+            why_search = f"the MusicBrainz album ID '{meta.album_id}' is no valid ID"
+        else:
+            if album not in releases:
+                yield Searching(prefix, "asking MusicBrainz")
+            release = release_tracks(album)
+            if isinstance(release, str):
+                yield outcome("failed", release)
+                continue
+            if release is None:
+                # Often a release group's ID: its releases are the candidates.
+                why_search = f"MusicBrainz has no release {album}"
+                release_group = album
+            else:
+                track, reason = _release_track(release, meta)
+                if track is None:
+                    yield outcome("skipped", f"{reason}, skipped.", notable=True)
+                    continue
 
-        if album not in releases:
-            yield Searching(prefix, "asking MusicBrainz")
-            try:
-                releases[album] = providers.musicbrainz_release(album)
-            except (requests.RequestException, ValueError) as exc:
-                releases[album] = f"MusicBrainz lookup failed: {exc}"
-        release = releases[album]
-        if isinstance(release, str):
-            yield outcome("failed", release)
-            continue
-        if release is None:
-            yield outcome("skipped", f"MusicBrainz has no album {album} (merged or deleted?), skipped.",
-                          notable=True)
-            continue
+        found_by = ""
+        if why_search:
+            yield from search(prefix, meta, release_group)
+            result = searches[(_album_key(meta), release_group)]
+            track = result.tracks.get(path)
+            if track is None:
+                yield outcome("failed" if result.failed else "skipped",
+                              f"{why_search}, and {result.reason or 'it did not fit the release found'}"
+                              f"{'' if result.failed else ', skipped'}.", notable=not result.failed)
+                continue
+            found_by = f" (album found by searching: {result.release.label})"
 
-        track, reason = _release_track(release, meta)
-        if track is None:
-            yield outcome("skipped", f"{reason}, skipped.", notable=True)
-            continue
         if not track.isrcs:
-            yield outcome("skipped", "MusicBrainz has no ISRC for this recording, skipped.")
+            yield outcome("skipped", f"MusicBrainz has no ISRC for this recording{found_by}, skipped.")
             continue
         if dry_run:
-            yield outcome("planned", f"would add {_isrc_list(track.isrcs)}.")
+            yield outcome("planned", f"would add {_isrc_list(track.isrcs)}{found_by}.")
             continue
         try:
             written = tagging.write_isrcs(path, track.isrcs)
@@ -703,7 +831,11 @@ def isrcs(files: list[Path], cache: MetadataCache, dry_run: bool) -> Iterator[St
             continue
         finally:
             cache.invalidate(path)
-        yield outcome("done", f"added {_isrc_list(written)}.")
+        yield outcome("done", f"added {_isrc_list(written)}{found_by}.")
+
+
+def _album_key(meta: TrackMeta) -> tuple:
+    return (meta.path.parent, meta.album.casefold(), _album_artist(meta).casefold())
 
 
 def _isrc_list(codes: list[str]) -> str:

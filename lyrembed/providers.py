@@ -88,6 +88,16 @@ def _new_session() -> requests.Session:
     adapter = HTTPAdapter(max_retries=retry, pool_connections=pool, pool_maxsize=pool)
     session.mount("https://", adapter)
     session.mount("http://", adapter)
+    # MusicBrainz answers too many requests with 503, and quick retries
+    # count against its limit again: none here, _musicbrainz_get waits and
+    # asks again itself. (The longest matching prefix picks the adapter.)
+    session.mount(_musicbrainz_base() + "/", HTTPAdapter(max_retries=Retry(
+        total=int(config.get("api", "retry_total", 2)),
+        backoff_factor=float(config.get("api", "retry_backoff", 0.3)),
+        status_forcelist=(500, 502, 504),
+        allowed_methods=frozenset(["GET"]),
+        raise_on_status=False,
+    )))
     return session
 
 
@@ -1289,19 +1299,39 @@ _MB_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 ISRC_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{3}[0-9]{7}$")
 
 
+# After a 503 ("too many requests", or its search servers busy): wait this
+# long, or as long as Retry-After says, and ask again; then give up.
+_MB_BUSY_WAITS = (3.0, 10.0)
+_MB_LONGEST_WAIT = 30.0
+
+
+def _musicbrainz_base() -> str:
+    return str(config.get("api", "musicbrainz_url", "https://musicbrainz.org/ws/2")).rstrip("/")
+
+
 def _musicbrainz_get(path: str, params: dict) -> requests.Response:
     """One request to the MusicBrainz API, at most one a second across every
-    caller in this process."""
+    caller in this process. A 503 is waited out and asked again, holding the
+    lock, so nothing else asks meanwhile."""
     global _MB_LAST_CALL
-    base = str(config.get("api", "musicbrainz_url", "https://musicbrainz.org/ws/2")).rstrip("/")
+    url = f"{_musicbrainz_base()}/{path}"
     with _MB_LOCK:
-        wait = _MB_LAST_CALL + _MB_INTERVAL - time.monotonic()
-        if wait > 0:
-            time.sleep(wait)
-        try:
-            return get_session().get(f"{base}/{path}", params=params, timeout=_timeout())
-        finally:
-            _MB_LAST_CALL = time.monotonic()
+        for busy_wait in (*_MB_BUSY_WAITS, None):
+            wait = _MB_LAST_CALL + _MB_INTERVAL - time.monotonic()
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                response = get_session().get(url, params=params, timeout=_timeout())
+            finally:
+                _MB_LAST_CALL = time.monotonic()
+            if response.status_code != 503 or busy_wait is None:
+                return response
+            try:
+                asked = float(response.headers.get("Retry-After", 0))
+            except (TypeError, ValueError):
+                asked = 0.0
+            time.sleep(min(max(busy_wait, asked), _MB_LONGEST_WAIT))
+    raise AssertionError("unreachable")
 
 
 def is_musicbrainz_id(value: str) -> bool:
@@ -1318,6 +1348,7 @@ class ReleaseTrack:
     title: str
     recording_id: str
     isrcs: list[str]
+    length_ms: int = 0
 
 
 def musicbrainz_release(release_id: str) -> list[ReleaseTrack] | None:
@@ -1345,14 +1376,80 @@ def musicbrainz_release(release_id: str) -> list[ReleaseTrack] | None:
             if not isinstance(recording, dict) or not isinstance(track.get("position"), int):
                 continue
             isrcs = [str(code).strip().upper() for code in recording.get("isrcs") or []]
+            length = track.get("length") or recording.get("length")
             tracks.append(ReleaseTrack(
                 disc=disc if isinstance(disc, int) else 1,
                 number=track["position"],
                 title=str(track.get("title") or recording.get("title") or ""),
                 recording_id=str(recording.get("id") or ""),
                 isrcs=[code for code in dict.fromkeys(isrcs) if ISRC_RE.match(code)],
+                length_ms=length if isinstance(length, int) and length > 0 else 0,
             ))
     return tracks
+
+
+@dataclass
+class FoundRelease:
+    """A release a MusicBrainz search found, as far as choosing one needs."""
+
+    id: str
+    title: str
+    score: int
+    track_count: int
+    date: str = ""
+    country: str = ""
+    disambiguation: str = ""
+
+    @property
+    def url(self) -> str:
+        return f"https://musicbrainz.org/release/{self.id}"
+
+    @property
+    def label(self) -> str:
+        details = ", ".join(x for x in (self.disambiguation, self.country, self.date) if x)
+        return f"{self.title} ({details})" if details else self.title
+
+
+_LUCENE_SPECIAL = re.compile(r'([+\-&|!(){}\[\]^"~*?:\\/])')
+
+
+def _lucene_terms(value: str) -> str:
+    """Words for a Lucene field query, special characters escaped."""
+    return " ".join(_LUCENE_SPECIAL.sub(r"\\\1", word) for word in value.split())
+
+
+def musicbrainz_search_releases(album: str = "", artist: str = "", release_group: str = "",
+                                limit: int = 10) -> list[FoundRelease]:
+    """Releases MusicBrainz finds for an album title and artist, or all
+    releases of a release group, best match first. Only candidates: the
+    caller checks each against the files. Raises requests/ValueError errors."""
+    if release_group:
+        if not is_musicbrainz_id(release_group):
+            raise ValueError(f"'{release_group}' is no MusicBrainz ID")
+        query = f"rgid:{release_group.strip().lower()}"
+    else:
+        if not album.strip() or not artist.strip():
+            raise ValueError("an album and an artist are needed to search")
+        query = f"release:({_lucene_terms(album)}) AND artist:({_lucene_terms(artist)})"
+    response = _musicbrainz_get("release", {"query": query, "limit": limit, "fmt": "json"})
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("releases"), list):
+        raise ValueError("Unexpected MusicBrainz response")
+    found = []
+    for release in payload["releases"]:
+        if not isinstance(release, dict) or not is_musicbrainz_id(str(release.get("id") or "")):
+            continue
+        score = release.get("score")
+        count = release.get("track-count")
+        found.append(FoundRelease(
+            id=release["id"], title=str(release.get("title") or ""),
+            score=score if isinstance(score, int) else 0,
+            track_count=count if isinstance(count, int) else 0,
+            date=str(release.get("date") or ""), country=str(release.get("country") or ""),
+            disambiguation=str(release.get("disambiguation") or ""),
+        ))
+    return sorted(found, key=lambda r: -r.score)
 
 
 def musicbrainz_instrumental(recording_id: str) -> str | None:

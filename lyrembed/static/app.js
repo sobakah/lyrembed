@@ -871,9 +871,10 @@ const ACTIONS = {
   },
   isrc: {
     label: 'Add missing ISRCs from MusicBrainz',
-    about: 'Adds the ISRC of each track\'s recording, for tracks tagged with a MusicBrainz album ID (MusicBrainz Picard '
-      + 'writes one). A track is found by its recording ID, else by its disc and track number when the title fits. '
-      + 'An ISRC a track already has is kept. One request per album, at most one a second.',
+    about: 'Adds the ISRC of each track\'s recording. The album is found by its MusicBrainz album ID (MusicBrainz Picard '
+      + 'writes one), else by searching for its title and album artist; a release found by searching is only used when '
+      + 'every track of the album fits it (number, title, length). An ISRC a track already has is kept. '
+      + 'Try a dry run first: it names each release it found.',
   },
 };
 // The actions that can run as a dry run.

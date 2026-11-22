@@ -15,6 +15,7 @@ from lyrembed.core import natural_key  # noqa: E402
 from lyrembed import selfupdate  # noqa: E402
 
 REAL_LATEST = selfupdate.latest  # before no_update_check replaces it
+REAL_GET_SESSION = providers.get_session
 
 
 @pytest.fixture(autouse=True)
@@ -3936,17 +3937,25 @@ def _make_mp3(path: Path) -> Path:
 
 
 class _FakeMusicBrainz:
-    """Answers release lookups from *releases* and counts the requests."""
+    """Answers release lookups from *releases* and searches from *found*
+    (query → release summaries), and counts the requests. *statuses* are
+    answered first, one per request (503s, say)."""
 
-    def __init__(self, releases, status=200):
+    def __init__(self, releases, status=200, found=None, statuses=()):
         self.releases, self.status, self.requests = releases, status, []
+        self.found, self.statuses = found or {}, list(statuses)
 
     def get(self, url, params=None, timeout=None, headers=None):
         self.requests.append((url, params))
         fake = self
+        last = url.rsplit("/", 1)[1]
+        searching = last == "release"
+        status = fake.statuses.pop(0) if fake.statuses else \
+            200 if searching else 404 if last not in fake.releases else fake.status
 
         class Response:
-            status_code = 404 if url.rsplit("/", 1)[1] not in fake.releases else fake.status
+            status_code = status
+            headers = {}
 
             def raise_for_status(self):
                 if self.status_code >= 400:
@@ -3954,26 +3963,30 @@ class _FakeMusicBrainz:
                     raise requests.HTTPError(f"{self.status_code} Service Unavailable")
 
             def json(self):
-                return fake.releases[url.rsplit("/", 1)[1]]
+                if searching:
+                    return {"releases": fake.found.get(params["query"], [])}
+                return fake.releases[last]
         return Response()
 
 
 def _release(*media):
-    """A release's JSON: each medium a list of (title, recording id, isrcs)."""
+    """A release's JSON: each medium a list of (title, recording id, isrcs)
+    or (title, recording id, isrcs, length in ms)."""
     return {"id": ALBUM, "media": [
         {"position": disc, "tracks": [
-            {"position": n, "number": str(n), "title": title,
-             "recording": {"id": rec, "title": title, "isrcs": isrcs}}
-            for n, (title, rec, isrcs) in enumerate(tracks, 1)]}
+            {"position": n, "number": str(n), "title": track[0], "length": (track[3:] or [None])[0],
+             "recording": {"id": track[1], "title": track[0], "isrcs": track[2]}}
+            for n, track in enumerate(tracks, 1)]}
         for disc, tracks in enumerate(media, 1)]}
 
 
 @pytest.fixture
 def musicbrainz(monkeypatch):
-    def install(releases, status=200):
-        fake = _FakeMusicBrainz(releases, status)
+    def install(releases, status=200, found=None, statuses=()):
+        fake = _FakeMusicBrainz(releases, status, found, statuses)
         monkeypatch.setattr(providers, "get_session", lambda: fake)
         monkeypatch.setattr(providers, "_MB_INTERVAL", 0.0)
+        monkeypatch.setattr(providers, "_MB_BUSY_WAITS", (0.0, 0.0))
         return fake
     return install
 
@@ -4140,7 +4153,8 @@ def test_a_failed_album_lookup_fails_its_tracks_with_one_request(cfg, tmp_path, 
     outcomes = [s for s in core.isrcs(files, tagging.MetadataCache(), dry_run=False)
                 if isinstance(s, core.Outcome)]
     assert [o.result for o in outcomes] == ["failed", "failed"]
-    assert "MusicBrainz lookup failed" in outcomes[1].message and len(fake.requests) == 1
+    # One album: asked once, and twice again after the 503 (waited out in between).
+    assert "MusicBrainz lookup failed" in outcomes[1].message and len(fake.requests) == 3
 
 
 def test_isrcs_from_the_page_and_in_batch_mode(cfg, config_home, tmp_path, musicbrainz, capsys):
@@ -4170,3 +4184,123 @@ def test_isrc_option_combinations(argv, message, capsys):
     with pytest.raises(SystemExit):
         cli.parse_args(argv)
     assert message in capsys.readouterr().err
+
+
+# --- ISRCs for albums without a usable ID: a search ---------------------------------------
+OTHER = ["2c3d4e5f-0000-4000-8000-00000000000{}".format(n) for n in range(4)]
+
+
+def _summary(release_id, title, count, score=100, **more):
+    return {"id": release_id, "title": title, "score": score, "track-count": count, **more}
+
+
+def _loose(tmp_path, name, number, title, album="Album", **tags):
+    """A track as an iTunes purchase has it: no MusicBrainz IDs, 10 s long."""
+    return _flac_with_tags(tmp_path / name, title=title, artist="Band", albumartist="Band",
+                           album=album, tracknumber=str(number), **tags)
+
+
+def test_an_album_without_an_id_is_found_by_searching(cfg, tmp_path, musicbrainz, capsys):
+    from mutagen.flac import FLAC
+
+    query = "release:(Album \\(Deluxe\\)) AND artist:(Band)"
+    fake = musicbrainz(
+        {
+            # The best-scoring release has other songs; the second fits.
+            OTHER[0]: _release([("Something", REC[0], ["USAAA0000009"], 10_000),
+                                ("Else", REC[1], [], 10_000)]),
+            OTHER[1]: _release([("One", REC[2], ["USAAA0000001"], 11_000),
+                                ("Two (Remastered)", REC[3], ["USAAA0000002", "GBBBB0000002"], 9_500),
+                                ("Bonus", REC[4], [], 200_000)]),
+        },
+        found={query: [_summary(OTHER[0], "Album", 2), _summary(OTHER[1], "Album", 3, 90,
+                                                              country="XW", date="2020"),
+                       _summary(OTHER[2], "Album (Single)", 1, 80)]})     # too few tracks: never asked
+    files = [_loose(tmp_path, "1.flac", 1, "One", album="Album (Deluxe)"),
+             _loose(tmp_path, "2.flac", 2, "Two", album="Album (Deluxe)")]
+    steps = list(core.isrcs(files, tagging.MetadataCache(), dry_run=True))
+    notices = [s.message for s in steps if isinstance(s, core.Notice)]
+    assert notices == ["2 tracks of 'Album (Deluxe)' found on MusicBrainz as Album (XW, 2020): "
+                       f"https://musicbrainz.org/release/{OTHER[1]}"]
+    planned = [s.message for s in steps if isinstance(s, core.Outcome)]
+    assert planned == ["would add the ISRC USAAA0000001 (album found by searching: Album (XW, 2020)).",
+                       "would add the ISRCs USAAA0000002, GBBBB0000002 (album found by searching: Album (XW, 2020))."]
+    # One search and two lookups for the album, not one per track.
+    assert [url.rsplit("/", 1)[1] for url, _ in fake.requests] == ["release", OTHER[0], OTHER[1]]
+
+    assert batch.run_isrcs(files, tagging.MetadataCache(), dry_run=False) == 0
+    assert FLAC(files[1])["ISRC"] == ["USAAA0000002", "GBBBB0000002"]
+    assert "found on MusicBrainz as Album (XW, 2020)" in capsys.readouterr().out
+
+
+def test_a_searched_release_must_fit_every_track_of_the_album(cfg, tmp_path, musicbrainz):
+    query = "release:(Album) AND artist:(Band)"
+    # Track 2 is 4 s longer on MusicBrainz: another recording, maybe.
+    musicbrainz({OTHER[0]: _release([("One", REC[0], ["USAAA0000001"], 10_000),
+                                     ("Two", REC[1], ["USAAA0000002"], 14_500)])},
+                found={query: [_summary(OTHER[0], "Album", 2)]})
+    files = [_loose(tmp_path, "1.flac", 1, "One"), _loose(tmp_path, "2.flac", 2, "Two")]
+    outcomes = [s for s in core.isrcs(files, tagging.MetadataCache(), dry_run=True)
+                if isinstance(s, core.Outcome)]
+    assert [o.result for o in outcomes] == ["skipped", "skipped"] and all(o.notable for o in outcomes)
+    assert "no MusicBrainz release of 'Album' by Band fits all 2 of its tracks here" in outcomes[0].message
+
+    # Nothing found, and nothing to search for.
+    lonely = _flac_with_tags(tmp_path / "3.flac", title="Three", artist="Band")
+    outcomes = [s for s in core.isrcs([lonely], tagging.MetadataCache(), dry_run=True)
+                if isinstance(s, core.Outcome)]
+    assert "no album and album artist to search MusicBrainz for" in outcomes[0].message
+
+
+def test_a_release_group_id_in_the_album_tag_is_searched_within(cfg, tmp_path, musicbrainz):
+    """A tag editor put the release group's ID where the release's belongs:
+    MusicBrainz knows no release by it, so its releases are the candidates."""
+    group = OTHER[3]
+    musicbrainz({OTHER[0]: _release([("One", REC[0], ["USAAA0000001"], 10_000)])},
+                found={f"rgid:{group}": [_summary(OTHER[0], "Album", 1)]})
+    track = _loose(tmp_path, "1.flac", 1, "One", musicbrainz_albumid=f"MUSICBRAINZ_ALBUMID={group}")
+    outcomes = [s for s in core.isrcs([track], tagging.MetadataCache(), dry_run=True)
+                if isinstance(s, core.Outcome)]
+    assert outcomes[0].result == "planned" and "USAAA0000001" in outcomes[0].message
+
+
+def test_musicbrainz_refusals_are_waited_out(cfg, musicbrainz, monkeypatch):
+    fake = musicbrainz({ALBUM: _release([("One", REC[0], ["USAAA0000001"])])}, statuses=[503, 503])
+    assert providers.musicbrainz_release(ALBUM)[0].isrcs == ["USAAA0000001"]
+    assert len(fake.requests) == 3
+    fake.statuses = [503, 503, 503]
+    with pytest.raises(Exception, match="503"):
+        providers.musicbrainz_release(ALBUM)
+    # Quick automatic retries would count against its limit: none for 503.
+    monkeypatch.setattr(providers, "_SESSION", None)
+    monkeypatch.setattr(providers, "get_session", REAL_GET_SESSION)
+    session = providers.get_session()
+    adapter = session.get_adapter(f"{providers._musicbrainz_base()}/release/x")
+    assert 503 not in adapter.max_retries.status_forcelist
+    assert 503 in session.get_adapter("https://lrclib.net/api/get").max_retries.status_forcelist
+    providers.close_session()
+
+
+def test_a_translated_title_counts_on_its_number_and_length_when_most_titles_fit(cfg, tmp_path, musicbrainz):
+    """Track 2 is 'Мусорщики' on MusicBrainz, 'Scavengers' in the file, the
+    same length: the rest of the album vouches for it. Alone, it would not."""
+    query = "release:(Album) AND artist:(Band)"
+    musicbrainz({OTHER[0]: _release([("One", REC[0], ["USAAA0000001"], 10_000),
+                                     ("Мусорщики", REC[1], ["USAAA0000002"], 10_400),
+                                     ("Three", REC[2], ["USAAA0000003"], 9_800)])},
+                found={query: [_summary(OTHER[0], "Album", 3)]})
+    files = [_loose(tmp_path, "1.flac", 1, "One"), _loose(tmp_path, "2.flac", 2, "Scavengers"),
+             _loose(tmp_path, "3.flac", 3, "Three")]
+    outcomes = [s for s in core.isrcs(files, tagging.MetadataCache(), dry_run=True)
+                if isinstance(s, core.Outcome)]
+    assert [o.result for o in outcomes] == ["planned"] * 3 and "USAAA0000002" in outcomes[1].message
+
+    # The same track alone: its title does not fit, nothing else vouches.
+    alone = [s for s in core.isrcs(files[1:2], tagging.MetadataCache(), dry_run=True)
+             if isinstance(s, core.Outcome)]
+    assert alone[0].result == "skipped"
+    # Without a track number the length is not enough either.
+    numberless = _flac_with_tags(tmp_path / "x.flac", title="Scavengers", artist="Band", album="Album")
+    meta = tagging.read_metadata(numberless)
+    tracks = providers.musicbrainz_release(OTHER[0])
+    assert core._searched_track(tracks, meta) is None

@@ -15,7 +15,7 @@ Vibecoded tool for Linux, macOS and Windows to search, check, romanize and embed
 * **Smart tag cleaning & aliases** — strips features (`feat. …`), filters localised bracketed subtitles out of queries, and resolves group acronyms (*Tomorrow X Together* ↔ *TXT*) with word-boundary matching.
 * **Romanization** with automatic script detection, preserving LRC timestamps: Hangul → Romaja, Kanji/Kana → Hepburn Rōmaji, Hanzi → Pīnyīn, and any other script → Latin via `anyascii`. Lines containing several scripts at once are split into runs and converted per run, and text that is already Latin is never touched — so passes can be combined without destroying each other's output.
 * **Batch mode** — `--auto` tags every track with a confident match; `--dry-run` reports without writing, `--overwrite` backs up the lyrics it replaces.
-* **ISRCs from MusicBrainz** — tracks tagged by MusicBrainz Picard get the ISRCs of their recordings, one request per album; an ISRC a track already has is kept.
+* **ISRCs from MusicBrainz** — tracks get the ISRCs of their recordings, by the album's MusicBrainz ID or a search for the album; an ISRC a track already has is kept.
 * **Works with the other programs** — **Import a CD** hands the tab to [cdport](https://github.com/sobakah/cdport) and back; a player such as [Jewelcase](https://github.com/sobakah/jewelcase) gets romanization, pages and lyrics searches over [D-Bus](#d-bus).
 * **Search results are cached for the session** — leaving a track and coming back to it reuses the previous result instead of querying the providers again.
 * **Safeguards** — metadata cached by modification time, recursion depth and file-count caps, backups of every lyrics they replace, colour output honouring `NO_COLOR` and non-TTY pipes.
@@ -292,8 +292,9 @@ An invalid file found on the search paths produces a warning and the defaults ar
 
 An ISRC identifies a recording; players such as [Jewelcase](https://github.com/sobakah/jewelcase) use it to find a streaming service's song among your files. lyrembed adds the ISRCs MusicBrainz knows to tracks that have none, with the bulk action **Add missing ISRCs from MusicBrainz** or `--auto --isrc`:
 
-* Only tracks tagged with a MusicBrainz album ID (`MUSICBRAINZ_ALBUMID`, written by MusicBrainz Picard) are looked up, with one request per album, at most one a second.
-* A track is found on the album by its MusicBrainz recording ID; without one (or when MusicBrainz has since merged the recording), by its disc and track number, but only when its title fits MusicBrainz's. Anything else is skipped with the reason.
+* An album tagged with a MusicBrainz album ID (`MUSICBRAINZ_ALBUMID`, written by MusicBrainz Picard) is looked up by it, with one request per album. A track is found on it by its MusicBrainz recording ID; without one (or when MusicBrainz has since merged the recording), by its disc and track number, but only when its title fits MusicBrainz's.
+* An album without a usable ID is searched for by its title and album artist (a few requests per album), or among the releases of its release group when the tag holds a release group's ID. A release found this way is only used when every track of the album in that folder fits it: the same track number and a length within 3 seconds, and a title that fits. A title that doesn't (a translation, say) is accepted on its number and length only when most of the album's titles fit. The run names the release it used, with its MusicBrainz address.
+* Requests go out at most one a second; when MusicBrainz is busy, lyrembed waits and asks again. Anything that doesn't fit is skipped with the reason.
 * A recording often has several ISRCs (a reissue, another label); all of them are written, except in ID3v2.3 tags, which hold only the first.
 * They go where Picard writes them: `ISRC` in FLAC, Ogg Vorbis and Opus, `TSRC` in MP3, `----:com.apple.iTunes:ISRC` in M4A.
 * A track that already has an ISRC keeps it, including one in the iTunes Store's `xid ` atom. Nothing else in the file changes, so nothing is backed up.

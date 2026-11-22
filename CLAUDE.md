@@ -232,6 +232,18 @@ hard to spot.
   (`providers._musicbrainz_get`). The ID is checked as a UUID before it goes into the address.
 - MusicBrainz IDs are taken out of the tag's value (`tagging._musicbrainz_id`): some rips carry
   `MUSICBRAINZ_ALBUMID=<id>` as the value (Jewelcase's `mbid()` accepts it too).
+- **Albums without a usable ID are searched for** (`providers.musicbrainz_search_releases`; a
+  release group's ID in the tag, which MusicBrainz answers with 404 as a release, searches its
+  releases by `rgid:`). A found release counts only when **every** run track of the folder's
+  album (same album and album artist) fits it: number, length within `_LENGTH_TOLERANCE_S` and title
+  (`text.matches_title`) (`core._searched_track`); a translated title counts on number and both
+  lengths only while more than half of the album fits by title (`core._fits_release`; a
+  game soundtrack's track is Russian on MusicBrainz); at most `_SEARCH_LOOKUPS` releases are fetched
+  per album. The Notice names the release and its address: the dry run is how it is checked.
+- **MusicBrainz 503s are waited out** in `providers._musicbrainz_get` (`_MB_BUSY_WAITS`,
+  `Retry-After`), and its address has its own adapter on the session without 503 in the retry
+  list: urllib3's quick retries counted against its limit and the first search run failed with
+  503s for most albums.
 
 **Program structure**
 

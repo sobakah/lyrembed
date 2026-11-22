@@ -70,7 +70,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--dry-run", action="store_true", help="in --auto mode, report what would change and write nothing")
     batch.add_argument("--isrc", action="store_true",
                        help="in --auto mode, add missing ISRCs from MusicBrainz instead of fetching lyrics "
-                            "(files tagged with a MusicBrainz album ID)")
+                            "(albums found by their MusicBrainz ID, else by a search)")
     romanize = batch.add_mutually_exclusive_group()
     romanize.add_argument("--romanize", action="store_true", default=None,
                           help="in --auto mode, romanize the lyrics it embeds (default: settings.auto_romanize)")
