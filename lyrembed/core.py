@@ -254,7 +254,7 @@ def instrumental_hint(meta: TrackMeta) -> tuple[str | None, str | None]:
         return f"the title says '{marker}'", None
     if meta.language.lower() == "zxx":
         return "the language tag is 'zxx' (no lyrics)", None
-    if meta.recording_id and config.get("api", "enable_musicbrainz", False):
+    if providers.is_musicbrainz_id(meta.recording_id) and config.get("api", "enable_musicbrainz", False):
         try:
             verdict = providers.musicbrainz_instrumental(meta.recording_id)
         except (requests.RequestException, ValueError) as exc:

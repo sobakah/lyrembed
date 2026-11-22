@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -36,6 +37,7 @@ MP4_ISRC_KEY = "----:com.apple.iTunes:ISRC"
 ID3_ALBUM_ID_KEY = "TXXX:MusicBrainz Album Id"
 # The iTunes Store's own ID atom, "label:isrc:CODE": an ISRC that is never replaced.
 MP4_XID_KEY = "xid "
+_MBID_RE = re.compile(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", re.IGNORECASE)
 
 # The containers this module can read and write. settings.supported_extensions
 # may narrow the scan but cannot add formats.
@@ -133,6 +135,14 @@ def _freeform(values) -> str:
     if isinstance(value, (bytes, bytearray)):
         return bytes(value).decode("utf-8", "replace")
     return str(value) if value else ""
+
+
+def _musicbrainz_id(value: str) -> str:
+    """The MusicBrainz ID in a tag's value. Some rips carry the key in the
+    value too ("MUSICBRAINZ_ALBUMID=4cca…"); anything without an ID stays
+    as it is, for the caller to call invalid."""
+    match = _MBID_RE.search(value)
+    return match.group(0).lower() if match else value.strip()
 
 
 def _xid_isrc(values) -> str:
@@ -351,8 +361,8 @@ def read_metadata(path: Path) -> TrackMeta:
     meta.artist = meta.artist.strip()
     meta.album = meta.album.strip()
     meta.album_artist = meta.album_artist.strip()
-    meta.recording_id = meta.recording_id.strip()
-    meta.album_id = meta.album_id.strip()
+    meta.recording_id = _musicbrainz_id(meta.recording_id)
+    meta.album_id = _musicbrainz_id(meta.album_id)
     meta.isrc = meta.isrc.strip()
     meta.language = meta.language.strip()
     meta.lyrics = unix_newlines(meta.lyrics).strip()

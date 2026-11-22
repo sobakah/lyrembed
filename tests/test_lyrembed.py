@@ -1306,6 +1306,7 @@ def test_musicbrainz_verdicts(cfg, monkeypatch, tmp_path):
         "zxx": {"relations": [{"type": "performance", "attributes": [], "work": {"languages": ["zxx"]}}]},
         "song": {"relations": [{"type": "performance", "attributes": [], "work": {"languages": ["kor"]}}]},
     }
+    answers["5e4d1c2b-0000-4000-8000-000000000001"] = answers["zxx"]
 
     class FakeResponse:
         status_code = 200
@@ -1332,13 +1333,16 @@ def test_musicbrainz_verdicts(cfg, monkeypatch, tmp_path):
 
     path = _make_flac(tmp_path / "a.flac")
     audio = FLAC(path)
-    audio["title"], audio["artist"], audio["musicbrainz_trackid"] = "Song", "A", "zxx"
+    audio["title"], audio["artist"] = "Song", "A"
+    audio["musicbrainz_trackid"] = "5E4D1C2B-0000-4000-8000-000000000001"
     audio.save()
     meta = tagging.read_metadata(path)
-    assert meta.recording_id == "zxx"
+    assert meta.recording_id == "5e4d1c2b-0000-4000-8000-000000000001"
     assert core.instrumental_hint(meta) == (None, None)     # off by default
     cfg["api"]["enable_musicbrainz"] = True
     assert core.instrumental_hint(meta) == ("MusicBrainz: work without lyrics", None)
+    meta.recording_id = "../zxx"                             # never sent
+    assert core.instrumental_hint(meta) == (None, None)
 
 
 def test_netease_results_are_labelled_in_upper_case(cfg, monkeypatch):
@@ -4106,6 +4110,28 @@ def test_isrcs_are_added_by_recording_or_by_number_with_a_fitting_title(cfg, tmp
     assert FLAC(files[0])["ISRC"] == ["USAAA0000001"] and FLAC(files[1])["ISRC"] == ["USAAA0000002"]
     assert "ISRC" not in FLAC(files[2]) and FLAC(files[4])["ISRC"] == ["FRCCC0000009"]
     assert cache.get(files[0]).isrc == "USAAA0000001"
+
+
+def test_an_album_id_with_its_key_in_the_value_is_still_read(cfg, tmp_path, musicbrainz):
+    """Some rips (cyanrip, by their disc ID) carry 'MUSICBRAINZ_ALBUMID=<id>'
+    as the value; the run called all ten tracks of such an album invalid."""
+    from mutagen.flac import FLAC
+
+    musicbrainz({ALBUM: _release([("One", REC[0], ["USAAA0000001"])])})
+    track = _flac_with_tags(tmp_path / "01.flac", title="One", artist="Band", tracknumber="1",
+                            musicbrainz_albumid=f"MUSICBRAINZ_ALBUMID={ALBUM}",
+                            musicbrainz_trackid=f" {REC[0].upper()} ")
+    meta = tagging.read_metadata(track)
+    assert (meta.album_id, meta.recording_id) == (ALBUM, REC[0])
+    outcomes = [s for s in core.isrcs([track], tagging.MetadataCache(), dry_run=False)
+                if isinstance(s, core.Outcome)]
+    assert [o.result for o in outcomes] == ["done"] and FLAC(track)["ISRC"] == ["USAAA0000001"]
+    # A value without any ID is still reported as invalid, not as missing.
+    other = _flac_with_tags(tmp_path / "02.flac", title="Two", artist="Band", tracknumber="2",
+                            musicbrainz_albumid="not an id")
+    outcomes = [s for s in core.isrcs([other], tagging.MetadataCache(), dry_run=False)
+                if isinstance(s, core.Outcome)]
+    assert outcomes[0].notable and "'not an id' is no valid ID" in outcomes[0].message
 
 
 def test_a_failed_album_lookup_fails_its_tracks_with_one_request(cfg, tmp_path, musicbrainz):

@@ -230,6 +230,8 @@ hard to spot.
 - One `release/<MUSICBRAINZ_ALBUMID>?inc=recordings+isrcs` per album and run, not cached across
   runs; MusicBrainz's one request a second is shared with the instrumental check
   (`providers._musicbrainz_get`). The ID is checked as a UUID before it goes into the address.
+- MusicBrainz IDs are taken out of the tag's value (`tagging._musicbrainz_id`): some rips carry
+  `MUSICBRAINZ_ALBUMID=<id>` as the value (Jewelcase's `mbid()` accepts it too).
 
 **Program structure**
 
