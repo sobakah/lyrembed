@@ -68,6 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("--auto", action="store_true", help="tag every track with a confident match, without prompting")
     batch.add_argument("--overwrite", action="store_true", help="in --auto mode, also replace existing lyrics (backed up first)")
     batch.add_argument("--dry-run", action="store_true", help="in --auto mode, report what would change and write nothing")
+    batch.add_argument("--isrc", action="store_true",
+                       help="in --auto mode, add missing ISRCs from MusicBrainz instead of fetching lyrics "
+                            "(files tagged with a MusicBrainz album ID)")
     romanize = batch.add_mutually_exclusive_group()
     romanize.add_argument("--romanize", action="store_true", default=None,
                           help="in --auto mode, romanize the lyrics it embeds (default: settings.auto_romanize)")
@@ -90,11 +93,15 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     # Silently ignoring these would let a user believe --overwrite took effect.
     if not args.auto:
         given = [flag for flag, on in (("--overwrite", args.overwrite), ("--dry-run", args.dry_run),
+                                       ("--isrc", args.isrc),
                                        ("--romanize" if args.romanize else "--no-romanize",
                                         args.romanize is not None)) if on]
         if given:
             verb = "apply" if len(given) > 1 else "applies"
             parser.error(f"{' and '.join(given)} only {verb} together with --auto")
+    if args.isrc and (args.overwrite or args.romanize is not None):
+        flag = "--overwrite" if args.overwrite else "--romanize" if args.romanize else "--no-romanize"
+        parser.error(f"{flag} is about lyrics and does not apply to --isrc, which never replaces an ISRC")
     if args.no_browser and args.auto:
         parser.error("--no-browser and --auto exclude each other: batch mode runs without a page")
     if args.return_url and args.auto:
@@ -360,6 +367,8 @@ def main(argv: list[str] | None = None) -> int:
             # Batch mode may run from cron: it never asks for another folder.
             return 2
         base_dir, files = resolved
+        if args.isrc:
+            return batch.run_isrcs(core.sort_files(files, cache), cache, dry_run=args.dry_run)
         return batch.run_batch(core.sort_files(files, cache), base_dir, cache,
                                overwrite=args.overwrite, dry_run=args.dry_run)
     except KeyboardInterrupt:

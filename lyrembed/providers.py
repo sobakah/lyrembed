@@ -1284,6 +1284,77 @@ _MB_CACHE: dict[str, str | None] = {}
 _MB_INTERVAL = 1.0
 
 
+_MB_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+# An ISRC: country, registrant, year, designation (ISO 3901).
+ISRC_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{3}[0-9]{7}$")
+
+
+def _musicbrainz_get(path: str, params: dict) -> requests.Response:
+    """One request to the MusicBrainz API, at most one a second across every
+    caller in this process."""
+    global _MB_LAST_CALL
+    base = str(config.get("api", "musicbrainz_url", "https://musicbrainz.org/ws/2")).rstrip("/")
+    with _MB_LOCK:
+        wait = _MB_LAST_CALL + _MB_INTERVAL - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            return get_session().get(f"{base}/{path}", params=params, timeout=_timeout())
+        finally:
+            _MB_LAST_CALL = time.monotonic()
+
+
+def is_musicbrainz_id(value: str) -> bool:
+    return bool(_MB_ID_RE.match(value.strip().lower()))
+
+
+@dataclass
+class ReleaseTrack:
+    """A track of a MusicBrainz release, numbered as Picard tags it: disc =
+    the medium's position, number = the track's position on it."""
+
+    disc: int
+    number: int
+    title: str
+    recording_id: str
+    isrcs: list[str]
+
+
+def musicbrainz_release(release_id: str) -> list[ReleaseTrack] | None:
+    """The tracks of a release with their recordings' ISRCs, in one request,
+    or None when MusicBrainz has no such release. Raises requests/ValueError
+    errors for the caller to report. Not cached: a second run should see
+    ISRCs added on MusicBrainz meanwhile."""
+    release_id = release_id.strip().lower()
+    if not is_musicbrainz_id(release_id):
+        raise ValueError(f"'{release_id}' is no MusicBrainz ID")
+    response = _musicbrainz_get(f"release/{release_id}", {"inc": "recordings isrcs", "fmt": "json"})
+    if response.status_code == 404:
+        return None
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict) or not isinstance(payload.get("media"), list):
+        raise ValueError("Unexpected MusicBrainz response")
+    tracks = []
+    for medium in payload["media"]:
+        if not isinstance(medium, dict):
+            continue
+        disc = medium.get("position")
+        for track in medium.get("tracks") or []:
+            recording = track.get("recording") if isinstance(track, dict) else None
+            if not isinstance(recording, dict) or not isinstance(track.get("position"), int):
+                continue
+            isrcs = [str(code).strip().upper() for code in recording.get("isrcs") or []]
+            tracks.append(ReleaseTrack(
+                disc=disc if isinstance(disc, int) else 1,
+                number=track["position"],
+                title=str(track.get("title") or recording.get("title") or ""),
+                recording_id=str(recording.get("id") or ""),
+                isrcs=[code for code in dict.fromkeys(isrcs) if ISRC_RE.match(code)],
+            ))
+    return tracks
+
+
 def musicbrainz_instrumental(recording_id: str) -> str | None:
     """Ask MusicBrainz whether a recording has no vocals.
 
@@ -1293,22 +1364,9 @@ def musicbrainz_instrumental(recording_id: str) -> str | None:
     when MusicBrainz knows of none. Raises requests/ValueError errors for the
     caller to report. Answers are cached for the session.
     """
-    global _MB_LAST_CALL
     if recording_id in _MB_CACHE:
         return _MB_CACHE[recording_id]
-    base = str(config.get("api", "musicbrainz_url", "https://musicbrainz.org/ws/2")).rstrip("/")
-    with _MB_LOCK:
-        wait = _MB_LAST_CALL + _MB_INTERVAL - time.monotonic()
-        if wait > 0:
-            time.sleep(wait)
-        try:
-            response = get_session().get(
-                f"{base}/recording/{recording_id}",
-                params={"inc": "work-rels", "fmt": "json"},
-                timeout=_timeout(),
-            )
-        finally:
-            _MB_LAST_CALL = time.monotonic()
+    response = _musicbrainz_get(f"recording/{recording_id}", {"inc": "work-rels", "fmt": "json"})
     if response.status_code == 404:
         _MB_CACHE[recording_id] = None
         return None

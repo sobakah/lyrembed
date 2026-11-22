@@ -110,13 +110,14 @@ Terms used in all seven:
 run.py                   Launcher for checkouts (thin wrapper)
 lyrembed/
   cli.py                 Argument parsing, config loading, start-up, romanize --stdio
-  core.py                Scanning, saving, backups, batch and bulk runs; no output, no prompts
+  core.py                Scanning, saving, backups, batch, bulk and ISRC runs; no output, no prompts
   web.py                 The page's local HTTP server and JSON API (the default without --auto)
   batch.py               Batch mode (--auto): prints core's steps in the terminal
   static/                The page: index.html, app.js, style.css, lrc.js (editor's LRC logic),
                          base.css and icons.js (the family's shared look), icon.svg, logo.svg,
                          vendor/preact-htm.js
-  providers.py           LRCLIB / NetEase / QQ Music / Megalobiz / syncedlyrics, ranking, search cache
+  providers.py           LRCLIB / NetEase / QQ Music / Megalobiz / syncedlyrics, ranking, search cache,
+                         MusicBrainz (instrumental check, a release's ISRCs)
   tagging.py             Metadata and cover reading, writing, mtime-keyed cache
   text.py                Tag cleaning, artist matching, script handling, romanization
   ui.py                  Terminal colours, messages and the status line
@@ -215,6 +216,20 @@ hard to spot.
 - **Provider results are merged across concurrent responses**: `/get` and `/search` often return
   the same record; endpoint-derived attributes (`exact`) are merged, not taken from whichever
   future finished first.
+
+**ISRCs** (`core.isrcs`: the bulk action and `--auto --isrc`)
+
+- Jewelcase and Jewelcase Mobile match Spotify songs to files by ISRC first (read with lofty), so
+  **the tag names are Picard's**: Vorbis `ISRC`, ID3 `TSRC`, MP4 `----:com.apple.iTunes:ISRC`.
+  All of a recording's ISRCs are written, ID3v2.3 only the first (mutagen would join them with
+  `/`).
+- **An ISRC a file has is never replaced**: `tagging.write_isrcs` reads the file afresh and
+  refuses; the iTunes `xid ` atom (`label:isrc:CODE`) and `TXXX:ISRC` count as one.
+- **A wrong ISRC is worse than none** (it sends a song to the wrong file): the recording ID
+  decides, disc and track number only when `text.matches_title` agrees (`core._release_track`).
+- One `release/<MUSICBRAINZ_ALBUMID>?inc=recordings+isrcs` per album and run, not cached across
+  runs; MusicBrainz's one request a second is shared with the instrumental check
+  (`providers._musicbrainz_get`). The ID is checked as a UUID before it goes into the address.
 
 **Program structure**
 
@@ -412,18 +427,5 @@ steps in the shared block above.
 
 ## Open items
 
-- **ISRCs into existing files** (the owner's idea, 2026-11-22; not designed yet): lyrembed
-  already writes tags into existing files and asks MusicBrainz, so a step that adds missing
-  ISRCs fits here: by the file's `MUSICBRAINZ_ALBUMID`, the release's recordings and their
-  ISRCs, a dry run first, then written. cdport is to do the same for new rips.
-  Why: Jewelcase and Jewelcase Mobile match Spotify playlist songs to library files by ISRC
-  first, and most of the owner's files have none (fewer than one in ten in 2026;
-  cyanrip writes an ISRC only when the CD has it). Jewelcase already looks them up for its own
-  database (its CONCEPT.md §9.5, *As built*: one MusicBrainz request per album,
-  `release/<id>?inc=recordings+isrcs`, matched by disc and track number), but never writes music
-  files, so they stay there. Tags to write (Picard's names, which lofty reads as the ISRC in
-  Jewelcase and Jewelcase Mobile): FLAC/Vorbis `ISRC`, ID3 `TSRC`, MP4
-  `----:com.apple.iTunes:ISRC`. Never replace an ISRC a file already has (nor the iTunes
-  `xid ` atom); keep MusicBrainz's one request a second.
 - D-Bus activation by dbus-broker itself (service file installed, nothing started by hand) is not
   known to have been checked; a private dbus-daemon and a hand-started `--dbus` were.

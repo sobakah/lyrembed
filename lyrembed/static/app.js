@@ -869,7 +869,15 @@ const ACTIONS = {
     label: 'Delete embedded lyrics',
     about: 'Deletes the embedded lyrics. They are backed up first.',
   },
+  isrc: {
+    label: 'Add missing ISRCs from MusicBrainz',
+    about: 'Adds the ISRC of each track\'s recording, for tracks tagged with a MusicBrainz album ID (MusicBrainz Picard '
+      + 'writes one). A track is found by its recording ID, else by its disc and track number when the title fits. '
+      + 'An ISRC a track already has is kept. One request per album, at most one a second.',
+  },
 };
+// The actions that can run as a dry run.
+const DRY_RUNS = ['fetch', 'isrc'];
 
 function rowBadge(row) {
   if (row.kind === 'pause') return ['b-plain', 'WAITING'];
@@ -929,15 +937,15 @@ function BulkView({ library, job, onJob, onOpen, notify }) {
           <span><b>${a.label}</b>${action === key ? html`<br /><span class="muted small">${a.about}</span>` : ''}</span>
         </label>`)}
       </div>
-      ${action === 'fetch' && html`<div class="stack-tight options">
-        <label class="check"><input type="checkbox" checked=${overwrite} onChange=${() => setOverwrite(!overwrite)} />
-          <span>Also replace lyrics that are already there <span class="muted">(backed up first)</span></span></label>
+      ${DRY_RUNS.includes(action) && html`<div class="stack-tight options">
+        ${action === 'fetch' && html`<label class="check"><input type="checkbox" checked=${overwrite} onChange=${() => setOverwrite(!overwrite)} />
+          <span>Also replace lyrics that are already there <span class="muted">(backed up first)</span></span></label>`}
         <label class="check"><input type="checkbox" checked=${dryRun} onChange=${() => setDryRun(!dryRun)} />
-          <span>Dry run: search and report, write nothing</span></label>
-        <label class="row-wrap small"><span>Romanize what it saves</span>
+          <span>Dry run: ${action === 'isrc' ? 'look up' : 'search'} and report, write nothing</span></label>
+        ${action === 'fetch' && html`<label class="row-wrap small"><span>Romanize what it saves</span>
           <select value=${romanize} onChange=${(e) => setRomanize(e.target.value)}>
             <option value="setting">as the setting says</option><option value="yes">yes</option><option value="no">no</option>
-          </select></label>
+          </select></label>`}
       </div>`}
       ${action === 'delete' && withSidecar > 0 && html`<label class="check options">
         <input type="checkbox" checked=${sidecars} onChange=${() => setSidecars(!sidecars)} />
@@ -951,8 +959,10 @@ function BulkView({ library, job, onJob, onOpen, notify }) {
         <div class="row-wrap">
           <button class="btn btn-small" onClick=${() => pick(() => true)}>All</button>
           <button class="btn btn-small" onClick=${() => pick(() => false)}>None</button>
-          <button class="btn btn-small" onClick=${() => pick((t) => t.status === 'none')}>Without lyrics</button>
-          <button class="btn btn-small" onClick=${() => pick((t) => t.status === 'sync' || t.status === 'plain')}>With lyrics</button>
+          ${action === 'isrc'
+            ? html`<button class="btn btn-small" onClick=${() => pick((t) => !t.hasIsrc)}>Without ISRC</button>`
+            : html`<button class="btn btn-small" onClick=${() => pick((t) => t.status === 'none')}>Without lyrics</button>
+          <button class="btn btn-small" onClick=${() => pick((t) => t.status === 'sync' || t.status === 'plain')}>With lyrics</button>`}
         </div>
       </div>
       <div class="pick-list">
@@ -960,13 +970,15 @@ function BulkView({ library, job, onJob, onOpen, notify }) {
           <input type="checkbox" checked=${chosen.has(t.index)} onChange=${() => toggle(t.index)} />
           <span class="mono muted small" style=${{ width: '24px' }}>${t.index + 1}</span>
           <span class="grow">${t.title || t.file} <span class="muted small">${t.artist}</span></span>
-          <${StatusBadge} status=${t.status} short=${true} />
+          ${action === 'isrc'
+            ? html`<span class=${'badge ' + (t.hasIsrc ? 'b-sync' : 'b-plain')}>${t.hasIsrc ? 'ISRC' : 'NO ISRC'}</span>`
+            : html`<${StatusBadge} status=${t.status} short=${true} />`}
         </label>`)}
       </div>
     </div>
     <div class="row-wrap">
       <button class="btn btn-primary" disabled=${!chosen.size || starting} onClick=${start}>
-        <${Icon} name="layers" /> ${action === 'fetch' && dryRun ? 'Start the dry run' : 'Start'}</button>
+        <${Icon} name="layers" /> ${DRY_RUNS.includes(action) && dryRun ? 'Start the dry run' : 'Start'}</button>
     </div>
   </div>`;
 }

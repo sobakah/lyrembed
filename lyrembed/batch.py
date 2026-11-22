@@ -38,7 +38,7 @@ def _print_steps(steps, tally: core.Tally) -> None:
     while True:
         try:
             if isinstance(step, core.Searching):
-                with transient(f"{step.prefix}: searching..."):
+                with transient(f"{step.prefix}: {step.activity}..."):
                     step = next(steps)
             else:
                 step = next(steps)
@@ -83,4 +83,17 @@ def run_batch(files: list[Path], base_dir: Path, cache: MetadataCache,
           f"{StyleUI.RED}Failed: {tally.failed}{StyleUI.RESET}")
     if tally.backed_up and backup_root is not None:
         info(f"  Replaced lyrics were backed up to {backup_root}")
+    return 1 if tally.failed else 0
+
+
+def run_isrcs(files: list[Path], cache: MetadataCache, dry_run: bool) -> int:
+    """--auto --isrc: the ISRCs MusicBrainz knows, into tracks that have none."""
+    print_banner(f"Adding ISRCs from MusicBrainz ({len(files)} files){' - dry run' if dry_run else ''}")
+    tally = core.Tally()
+    _print_steps(core.isrcs(files, cache, dry_run), tally)
+
+    print_banner("Summary")
+    print(f"  {StyleUI.GREEN}{'Would add' if dry_run else 'Added'}: {tally.done}{StyleUI.RESET}   "
+          f"{StyleUI.YELLOW}Skipped: {tally.skipped}{StyleUI.RESET}   "
+          f"{StyleUI.RED}Failed: {tally.failed}{StyleUI.RESET}")
     return 1 if tally.failed else 0

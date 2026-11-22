@@ -212,7 +212,10 @@ JOB_LABELS = {
     "romanize": "Romanize embedded lyrics",
     "sidecars": "Extract embedded lyrics to .lrc files",
     "delete": "Delete embedded lyrics",
+    "isrc": "Add missing ISRCs from MusicBrainz",
 }
+# The runs that can be dry runs.
+DRY_RUN_JOBS = ("fetch", "isrc")
 
 
 class Job:
@@ -247,7 +250,7 @@ class Job:
                 # Every step that arrives is recorded, then the run may stop:
                 # an outcome arrives after its file was written.
                 if isinstance(step, core.Searching):
-                    self.current = f"{step.prefix}: searching…"
+                    self.current = f"{step.prefix}: {step.activity}…"
                 elif isinstance(step, core.Pause):
                     if step.limited:
                         self.current = f"{step.prefix}: {', '.join(step.limited)} is limiting requests; waiting {step.seconds:g} s"
@@ -479,6 +482,7 @@ class WebSession:
             "instrumental": bool(text.instrumental_marker(meta.title) or meta.language.lower() == "zxx"),
             "error": meta.error,
             "hasSidecar": tagging.stale_sidecar(path) is not None,
+            "hasIsrc": bool(meta.isrc),
             "cover": (self._cover(path) or {}).get("id", ""),
         }
 
@@ -821,11 +825,15 @@ class WebSession:
             if action == "fetch":
                 backup_root = core.backup_directory() if overwrite and not dry_run else None
                 steps = core.batch(files, self.base_dir, self.cache, overwrite, dry_run, backup_root, romanize)
+            elif action == "isrc":
+                # Adds tags, never replaces one: nothing to back up.
+                backup_root = None
+                steps = core.isrcs(files, self.cache, dry_run)
             else:
                 backup_root = core.backup_directory()
                 sidecars = bool(config.get("settings", "write_sidecar_lrc", False)) or delete_sidecars
                 steps = core.bulk(action, files, self.base_dir, self.cache, backup_root, delete_sidecars=sidecars)
-            job = Job(action, len(files), positions, backup_root, dry_run and action == "fetch")
+            job = Job(action, len(files), positions, backup_root, dry_run and action in DRY_RUN_JOBS)
             job.thread = threading.Thread(target=job.run, args=(steps,), name="lyrembed-bulk", daemon=True)
             self.job = job
             job.thread.start()

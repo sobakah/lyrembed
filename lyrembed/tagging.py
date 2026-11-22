@@ -8,9 +8,9 @@ from pathlib import Path
 
 from mutagen import MutagenError
 from mutagen.flac import FLAC
-from mutagen.id3 import ID3, USLT
+from mutagen.id3 import ID3, TSRC, USLT
 from mutagen.mp3 import MP3
-from mutagen.mp4 import MP4
+from mutagen.mp4 import MP4, MP4FreeForm
 from mutagen.oggopus import OggOpus
 from mutagen.oggvorbis import OggVorbis
 
@@ -27,6 +27,15 @@ VORBIS_ALBUM_ARTIST_KEYS = ("albumartist", "album artist", "album_artist")
 # Album artist values that name no artist: searching for them finds nothing.
 _COMPILATION_ARTISTS = {"various artists", "various", "va", "v.a.", "v/a", "verschiedene interpreten"}
 MP4_LYRIC_KEY = "\xa9lyr"
+
+# Where MusicBrainz Picard keeps the release ID and the ISRC; Jewelcase and
+# Jewelcase Mobile read these names (through lofty) when they match Spotify
+# songs to files.
+MP4_ALBUM_ID_KEY = "----:com.apple.iTunes:MusicBrainz Album Id"
+MP4_ISRC_KEY = "----:com.apple.iTunes:ISRC"
+ID3_ALBUM_ID_KEY = "TXXX:MusicBrainz Album Id"
+# The iTunes Store's own ID atom, "label:isrc:CODE": an ISRC that is never replaced.
+MP4_XID_KEY = "xid "
 
 # The containers this module can read and write. settings.supported_extensions
 # may narrow the scan but cannot add formats.
@@ -60,6 +69,10 @@ class TrackMeta:
     # language "zxx" means "no lyrics".
     recording_id: str = ""
     language: str = ""
+    # MusicBrainz release ID (Picard's MUSICBRAINZ_ALBUMID) and the ISRC the
+    # file already has, from any of the places taggers keep one.
+    album_id: str = ""
+    isrc: str = ""
     duration: int = 0
     lyrics: str = ""
     track_number: int = 0
@@ -120,6 +133,14 @@ def _freeform(values) -> str:
     if isinstance(value, (bytes, bytearray)):
         return bytes(value).decode("utf-8", "replace")
     return str(value) if value else ""
+
+
+def _xid_isrc(values) -> str:
+    """The ISRC in an iTunes Store ``xid `` atom ("label:isrc:CODE"), or ""."""
+    parts = _freeform(values).split(":")
+    if len(parts) >= 3 and parts[-2].lower() == "isrc":
+        return parts[-1]
+    return ""
 
 
 def _id3_text(tags, key: str) -> str:
@@ -266,6 +287,8 @@ def read_metadata(path: Path) -> TrackMeta:
                     meta.album_artist = value
                     break
             meta.recording_id = _first(audio.get("musicbrainz_trackid"))
+            meta.album_id = _first(audio.get("musicbrainz_albumid"))
+            meta.isrc = _first(audio.get("isrc"))
             meta.language = _first(audio.get("language"))
             meta.track_number = _parse_number(audio.get("tracknumber"))
             meta.disc_number = _parse_number(audio.get("discnumber"))
@@ -285,6 +308,8 @@ def read_metadata(path: Path) -> TrackMeta:
             ufid = tags.get("UFID:http://musicbrainz.org") if tags else None
             if ufid is not None:
                 meta.recording_id = bytes(ufid.data).decode("ascii", "replace")
+            meta.album_id = _id3_text(tags, ID3_ALBUM_ID_KEY)
+            meta.isrc = _id3_text(tags, "TSRC") or _id3_text(tags, "TXXX:ISRC")
             meta.track_number = _parse_number(_id3_text(tags, "TRCK"))
             meta.disc_number = _parse_number(_id3_text(tags, "TPOS"))
             if tags:
@@ -305,6 +330,8 @@ def read_metadata(path: Path) -> TrackMeta:
             meta.album = _first(audio.get("\xa9alb"))
             meta.album_artist = _first(audio.get("aART"))
             meta.recording_id = _freeform(audio.get("----:com.apple.iTunes:MusicBrainz Track Id"))
+            meta.album_id = _freeform(audio.get(MP4_ALBUM_ID_KEY))
+            meta.isrc = _freeform(audio.get(MP4_ISRC_KEY)) or _xid_isrc(audio.get(MP4_XID_KEY))
             meta.language = _freeform(audio.get("----:com.apple.iTunes:LANGUAGE"))
             meta.track_number = _parse_number(audio.get("trkn"))
             meta.disc_number = _parse_number(audio.get("disk"))
@@ -325,6 +352,8 @@ def read_metadata(path: Path) -> TrackMeta:
     meta.album = meta.album.strip()
     meta.album_artist = meta.album_artist.strip()
     meta.recording_id = meta.recording_id.strip()
+    meta.album_id = meta.album_id.strip()
+    meta.isrc = meta.isrc.strip()
     meta.language = meta.language.strip()
     meta.lyrics = unix_newlines(meta.lyrics).strip()
     return meta
@@ -410,6 +439,50 @@ def embed_lyrics(path: Path, lyrics: str) -> None:
 
     if config.get("settings", "write_sidecar_lrc", False):
         write_sidecar(path, lyrics)
+
+
+def write_isrcs(path: Path, isrcs: list[str]) -> list[str]:
+    """Add *isrcs* (one recording's) where Picard writes them: Vorbis ISRC,
+    ID3 TSRC, MP4 ----:com.apple.iTunes:ISRC. Every other tag stays.
+
+    Refuses a file that already has an ISRC, read afresh here: one written by
+    hand or by the label is never replaced. ID3v2.3 has no lists in text
+    frames (mutagen would join them with '/'), so it gets only the first.
+    Returns the ISRCs written; raises TaggingError.
+    """
+    if not isrcs:
+        raise ValueError("no ISRC to write")
+    existing = read_metadata(path)
+    if existing.error:
+        raise TaggingError(f"Could not read '{path.name}': {existing.error}")
+    if existing.isrc:
+        raise TaggingError(f"'{path.name}' already has the ISRC {existing.isrc}; left alone.")
+    ext = path.suffix.lower()
+    try:
+        audio = _open_audio(path)
+        values = list(isrcs)
+        if ext in (".flac", ".ogg", ".opus"):
+            audio["ISRC"] = values
+            audio.save()
+        elif ext == ".mp3":
+            had_tags = audio.tags is not None
+            if not had_tags:
+                audio.add_tags()
+            version = _id3_save_version(audio.tags if had_tags else None)
+            if version == 3:
+                values = values[:1]
+            audio.tags.add(TSRC(encoding=3, text=values))
+            audio.save(v2_version=version)
+        elif ext == ".m4a":
+            audio[MP4_ISRC_KEY] = [MP4FreeForm(code.encode("utf-8")) for code in values]
+            audio.save()
+        else:
+            raise TaggingError(f"Unsupported file type: {ext}")
+    except TaggingError:
+        raise
+    except (MutagenError, OSError, ValueError) as exc:
+        raise TaggingError(f"Could not write the ISRC to '{path.name}': {exc}") from exc
+    return values
 
 
 def delete_lyrics(path: Path) -> None:

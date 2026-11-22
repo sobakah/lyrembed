@@ -3918,3 +3918,229 @@ def test_outside_a_container_nothing_changes(monkeypatch):
     assert container.on_host(["a"]) == ["a"] and container.host_command(["a"]) == ["a"]
     assert container.flatpak_on_host(["flatpak", "run", "x"]) == ["flatpak", "run", "x"]
     assert container.open_url("http://x/") is True and container.container() is None
+
+
+# --- ISRCs from MusicBrainz -----------------------------------------------------------
+ALBUM = "0b4a1a4e-2b4c-4d43-9b8a-1f2e3d4c5b6a"
+REC = ["1d3e5f70-0000-4000-8000-00000000000{}".format(n) for n in range(6)]
+
+
+def _make_mp3(path: Path) -> Path:
+    """Ten silent MPEG-1 Layer III frames: enough for mutagen to tag."""
+    path.write_bytes((b"\xff\xfb\x90\x64" + bytes(413)) * 10)
+    return path
+
+
+class _FakeMusicBrainz:
+    """Answers release lookups from *releases* and counts the requests."""
+
+    def __init__(self, releases, status=200):
+        self.releases, self.status, self.requests = releases, status, []
+
+    def get(self, url, params=None, timeout=None, headers=None):
+        self.requests.append((url, params))
+        fake = self
+
+        class Response:
+            status_code = 404 if url.rsplit("/", 1)[1] not in fake.releases else fake.status
+
+            def raise_for_status(self):
+                if self.status_code >= 400:
+                    import requests
+                    raise requests.HTTPError(f"{self.status_code} Service Unavailable")
+
+            def json(self):
+                return fake.releases[url.rsplit("/", 1)[1]]
+        return Response()
+
+
+def _release(*media):
+    """A release's JSON: each medium a list of (title, recording id, isrcs)."""
+    return {"id": ALBUM, "media": [
+        {"position": disc, "tracks": [
+            {"position": n, "number": str(n), "title": title,
+             "recording": {"id": rec, "title": title, "isrcs": isrcs}}
+            for n, (title, rec, isrcs) in enumerate(tracks, 1)]}
+        for disc, tracks in enumerate(media, 1)]}
+
+
+@pytest.fixture
+def musicbrainz(monkeypatch):
+    def install(releases, status=200):
+        fake = _FakeMusicBrainz(releases, status)
+        monkeypatch.setattr(providers, "get_session", lambda: fake)
+        monkeypatch.setattr(providers, "_MB_INTERVAL", 0.0)
+        return fake
+    return install
+
+
+def test_isrcs_and_album_ids_are_read_where_taggers_keep_them(tmp_path):
+    from mutagen.id3 import ID3, TSRC, TXXX
+
+    flac = _flac_with_tags(tmp_path / "a.flac", musicbrainz_albumid=ALBUM, isrc="USAAA0000001")
+    meta = tagging.read_metadata(flac)
+    assert (meta.album_id, meta.isrc) == (ALBUM, "USAAA0000001")
+
+    mp3 = _make_mp3(tmp_path / "b.mp3")
+    tags = ID3()
+    tags.add(TXXX(encoding=3, desc="MusicBrainz Album Id", text=[ALBUM]))
+    tags.add(TXXX(encoding=3, desc="ISRC", text=["GBBBB0000002"]))      # not Picard's frame, still an ISRC
+    tags.save(mp3)
+    meta = tagging.read_metadata(mp3)
+    assert (meta.album_id, meta.isrc) == (ALBUM, "GBBBB0000002")
+    tags.add(TSRC(encoding=3, text=["USAAA0000001"]))
+    tags.save(mp3)
+    assert tagging.read_metadata(mp3).isrc == "USAAA0000001"
+
+
+def test_writing_isrcs_never_replaces_one_and_keeps_other_tags(tmp_path):
+    from mutagen.flac import FLAC
+    from mutagen.id3 import ID3, TIT2
+
+    flac = _flac_with_tags(tmp_path / "a.flac", title="Song", lyrics="[00:01.00]la")
+    assert tagging.write_isrcs(flac, ["USAAA0000001", "GBBBB0000002"]) == ["USAAA0000001", "GBBBB0000002"]
+    audio = FLAC(flac)
+    assert audio["ISRC"] == ["USAAA0000001", "GBBBB0000002"] and audio["LYRICS"] == ["[00:01.00]la"]
+    with pytest.raises(tagging.TaggingError, match="already has the ISRC USAAA0000001"):
+        tagging.write_isrcs(flac, ["FRCCC0000003"])
+    assert FLAC(flac)["ISRC"] == ["USAAA0000001", "GBBBB0000002"]
+
+    # ID3v2.3 has no lists in text frames: only the first, and the version stays.
+    mp3 = _make_mp3(tmp_path / "b.mp3")
+    tags = ID3()
+    tags.add(TIT2(encoding=3, text=["Song"]))
+    tags.save(mp3, v2_version=3)
+    assert tagging.write_isrcs(mp3, ["USAAA0000001", "GBBBB0000002"]) == ["USAAA0000001"]
+    tags = ID3(mp3)
+    assert tags.version[1] == 3 and tags["TSRC"].text == ["USAAA0000001"] and tags["TIT2"].text == ["Song"]
+
+    bare = _make_mp3(tmp_path / "c.mp3")      # no ID3 tag yet: the configured version, all of them
+    assert tagging.write_isrcs(bare, ["USAAA0000001", "GBBBB0000002"]) == ["USAAA0000001", "GBBBB0000002"]
+    assert ID3(bare)["TSRC"].text == ["USAAA0000001", "GBBBB0000002"]
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg not installed")
+def test_m4a_isrcs_go_into_the_itunes_atom_and_xid_counts_as_one(tmp_path):
+    from mutagen.mp4 import MP4
+
+    def m4a(name):
+        path = tmp_path / name
+        subprocess.run(["ffmpeg", "-nostdin", "-v", "error", "-f", "lavfi", "-i", "sine=duration=1",
+                        "-c:a", "aac", str(path)], check=True)
+        return path
+
+    plain = m4a("a.m4a")
+    audio = MP4(plain)
+    audio[tagging.MP4_ALBUM_ID_KEY] = [ALBUM.encode()]
+    audio.save()
+    assert tagging.read_metadata(plain).album_id == ALBUM
+    tagging.write_isrcs(plain, ["USAAA0000001", "GBBBB0000002"])
+    assert [bytes(v) for v in MP4(plain)[tagging.MP4_ISRC_KEY]] == [b"USAAA0000001", b"GBBBB0000002"]
+    assert tagging.read_metadata(plain).isrc == "USAAA0000001"
+
+    store = m4a("b.m4a")
+    audio = MP4(store)
+    audio["xid "] = ["SonyBMG:isrc:USSM19900123"]
+    audio.save()
+    assert tagging.read_metadata(store).isrc == "USSM19900123"
+    with pytest.raises(tagging.TaggingError):
+        tagging.write_isrcs(store, ["USAAA0000001"])
+    assert tagging.MP4_ISRC_KEY not in MP4(store) and MP4(store)["xid "] == ["SonyBMG:isrc:USSM19900123"]
+
+
+def test_a_release_is_read_with_its_recordings_isrcs(cfg, musicbrainz):
+    fake = musicbrainz({ALBUM: _release(
+        [("One", REC[0], ["usaaa0000001", "USAAA0000001", "not an isrc"]), ("Two", REC[1], [])],
+        [("Three", REC[2], ["GBBBB0000002"])])})
+    tracks = providers.musicbrainz_release(ALBUM.upper())
+    assert [(t.disc, t.number, t.title, t.isrcs) for t in tracks] == [
+        (1, 1, "One", ["USAAA0000001"]), (1, 2, "Two", []), (2, 1, "Three", ["GBBBB0000002"])]
+    url, params = fake.requests[0]
+    assert url.endswith(f"/release/{ALBUM}") and params == {"inc": "recordings isrcs", "fmt": "json"}
+    assert providers.musicbrainz_release("0b4a1a4e-0000-4000-8000-000000000000") is None    # 404
+    with pytest.raises(ValueError):
+        providers.musicbrainz_release("../artist/x")
+    assert len(fake.requests) == 2          # the bad ID was never sent
+
+
+def _album_track(tmp_path, name, disc, number, title, **tags):
+    return _flac_with_tags(tmp_path / name, title=title, artist="Band", musicbrainz_albumid=ALBUM,
+                           discnumber=str(disc), tracknumber=str(number), **tags)
+
+
+def test_isrcs_are_added_by_recording_or_by_number_with_a_fitting_title(cfg, tmp_path, musicbrainz):
+    from mutagen.flac import FLAC
+
+    fake = musicbrainz({ALBUM: _release(
+        [("One", REC[0], ["USAAA0000001"]), ("Two", REC[1], ["USAAA0000002"]),
+         ("Three", REC[2], ["USAAA0000003"]), ("Four", REC[3], [])],
+        [("Five", REC[4], ["USAAA0000005"])])})
+    files = [
+        # Numbered wrongly, but the recording ID settles it.
+        _album_track(tmp_path, "01.flac", 1, 9, "One", musicbrainz_trackid=REC[0]),
+        _album_track(tmp_path, "02.flac", 1, 2, "Two (Remastered)"),           # number, title fits
+        _album_track(tmp_path, "03.flac", 1, 3, "Something else"),             # number, title does not
+        _album_track(tmp_path, "04.flac", 1, 4, "Four"),                       # MusicBrainz has none
+        _album_track(tmp_path, "05.flac", 2, 1, "Five", isrc="FRCCC0000009"),  # has one already
+        _flac_with_tags(tmp_path / "06.flac", title="Loose", artist="Band"),   # no album ID
+        _album_track(tmp_path, "07.flac", 1, 7, "Seven"),                      # not on the release
+    ]
+    cache = tagging.MetadataCache()
+
+    dry = list(core.isrcs(files, cache, dry_run=True))
+    outcomes = [s for s in dry if isinstance(s, core.Outcome)]
+    assert [o.result for o in outcomes] == ["planned", "planned", "skipped", "skipped", "skipped",
+                                           "skipped", "skipped"]
+    assert [o.notable for o in outcomes] == [False, False, True, False, False, True, True]
+    assert "USAAA0000001" in outcomes[0].message and "'Three'" in outcomes[2].message
+    assert "FRCCC0000009" in outcomes[4].message
+    assert all("ISRC" not in FLAC(f) for f in files if f.name != "05.flac")
+    assert len(fake.requests) == 1                                  # one request for the album
+    assert [s.activity for s in dry if isinstance(s, core.Searching)] == ["asking MusicBrainz"]
+
+    tally = core.Tally()
+    for step in core.isrcs(files, cache, dry_run=False):
+        if isinstance(step, core.Outcome):
+            tally.add(step)
+    assert (tally.done, tally.skipped, tally.failed) == (2, 5, 0)
+    assert FLAC(files[0])["ISRC"] == ["USAAA0000001"] and FLAC(files[1])["ISRC"] == ["USAAA0000002"]
+    assert "ISRC" not in FLAC(files[2]) and FLAC(files[4])["ISRC"] == ["FRCCC0000009"]
+    assert cache.get(files[0]).isrc == "USAAA0000001"
+
+
+def test_a_failed_album_lookup_fails_its_tracks_with_one_request(cfg, tmp_path, musicbrainz):
+    fake = musicbrainz({ALBUM: _release([("One", REC[0], ["USAAA0000001"]), ("Two", REC[1], [])])}, status=503)
+    files = [_album_track(tmp_path, "01.flac", 1, 1, "One"), _album_track(tmp_path, "02.flac", 1, 2, "Two")]
+    outcomes = [s for s in core.isrcs(files, tagging.MetadataCache(), dry_run=False)
+                if isinstance(s, core.Outcome)]
+    assert [o.result for o in outcomes] == ["failed", "failed"]
+    assert "MusicBrainz lookup failed" in outcomes[1].message and len(fake.requests) == 1
+
+
+def test_isrcs_from_the_page_and_in_batch_mode(cfg, config_home, tmp_path, musicbrainz, capsys):
+    from mutagen.flac import FLAC
+
+    musicbrainz({ALBUM: _release([("One", REC[0], ["USAAA0000001"])])})
+    track = _album_track(tmp_path, "01.flac", 1, 1, "One")
+    session = web.WebSession(tmp_path, [track], tagging.MetadataCache())
+    assert session.library()["tracks"][0]["hasIsrc"] is False
+    session.start_job("isrc", [0], dry_run=True)
+    view = _wait_for_job(session)
+    assert view["dryRun"] and view["tally"]["done"] == 1 and not view["backupRoot"]
+    assert "ISRC" not in FLAC(track)
+
+    assert cli.main([str(tmp_path), "--auto", "--isrc", "--color", "never"]) == 0
+    assert "added the ISRC USAAA0000001" in capsys.readouterr().out
+    assert FLAC(track)["ISRC"] == ["USAAA0000001"]
+    assert session.library()["tracks"][0]["hasIsrc"] is True
+
+
+@pytest.mark.parametrize("argv, message", [
+    (["--isrc"], "only applies together with --auto"),
+    (["--auto", "--isrc", "--overwrite"], "does not apply to --isrc"),
+    (["--auto", "--isrc", "--no-romanize"], "does not apply to --isrc"),
+])
+def test_isrc_option_combinations(argv, message, capsys):
+    with pytest.raises(SystemExit):
+        cli.parse_args(argv)
+    assert message in capsys.readouterr().err

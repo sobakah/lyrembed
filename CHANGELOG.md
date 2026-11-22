@@ -6,6 +6,13 @@ All notable changes to lyrembed are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **ISRCs from MusicBrainz:** the bulk action *Add missing ISRCs from MusicBrainz* and
+  `--auto --isrc` add the ISRCs of each track's recording to tracks tagged by MusicBrainz Picard,
+  with one request per album, so Jewelcase can match streaming songs to your files. A dry run shows
+  what would be added; an ISRC a track already has is kept.
+
 ## [1.0.2] — 2026-11-19
 
 ### Added
