@@ -232,6 +232,12 @@ hard to spot.
 - One `release/<MUSICBRAINZ_ALBUMID>?inc=recordings+isrcs` per album and run, not cached across
   runs; MusicBrainz's one request a second is shared with the instrumental check
   (`providers._musicbrainz_get`). The ID is checked as a UUID before it goes into the address.
+- What a run leaves to do by hand is grouped by `core.isrc_review` (failed and notable skips to
+  check in Picard; `Outcome.kind == "no-isrc"` apart), shown after the run on the page
+  (`job_view`'s `review`) and in the terminal. **Open in Picard** (`/api/picard`) takes track
+  numbers, never paths; `web.find_picard`: `picard` on PATH, else the Flatpak
+  `org.musicbrainz.Picard` (`container.flatpak_on_host`). Picard 3 hands the files to an open
+  Picard.
 - MusicBrainz IDs are taken out of the tag's value (`tagging._musicbrainz_id`): some rips carry
   `MUSICBRAINZ_ALBUMID=<id>` as the value (Jewelcase's `mbid()` accepts it too).
 - **Albums without a usable ID are searched for** (`providers.musicbrainz_search_releases`; a

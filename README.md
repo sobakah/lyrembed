@@ -299,6 +299,8 @@ An ISRC identifies a recording; players such as [Jewelcase](https://github.com/s
 * They go where Picard writes them: `ISRC` in FLAC, Ogg Vorbis and Opus, `TSRC` in MP3, `----:com.apple.iTunes:ISRC` in M4A.
 * A track that already has an ISRC keeps it, including one in the iTunes Store's `xid ` atom. Nothing else in the file changes, so nothing is backed up.
 
+At the end, the run lists what is left to do by hand, by album: the tracks to check in MusicBrainz Picard (not found, or not fitting what was found), each album on the page with an **Open in Picard** button that hands its files to Picard (the `picard` program or its Flatpak), and, folded away, the recordings MusicBrainz knows but has no ISRC for. Tag the first in Picard and run the action again; the others can only get an ISRC on MusicBrainz itself.
+
 Try a dry run first: it reports which ISRCs would be added and why a track is skipped, and writes nothing. `api.musicbrainz_url` sets the server; `api.enable_musicbrainz` is only about instrumental tracks and is not needed here.
 
 ## Working with other programs

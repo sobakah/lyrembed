@@ -12,7 +12,8 @@ All notable changes to lyrembed are documented here. The format follows
   `--auto --isrc` add the ISRCs of each track's recording, so Jewelcase can match streaming songs
   to your files. Albums tagged by MusicBrainz Picard are found by their ID, others by a search for
   the album that only counts when every track fits. A dry run shows what would be added and which
-  release was found; an ISRC a track already has is kept.
+  release was found; an ISRC a track already has is kept. At the end it lists the albums to check
+  in MusicBrainz Picard, with a button on the page that opens them there.
 
 ## [1.0.2] — 2026-11-19
 

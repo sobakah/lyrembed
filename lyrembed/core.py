@@ -385,6 +385,14 @@ class Outcome:
     notable: bool = False
     warnings: list[str] = field(default_factory=list)
     backed_up: bool = False
+    # For summaries: "no-isrc" (an ISRC run: MusicBrainz knows the
+    # recording but has no ISRC for it).
+    kind: str = ""
+
+    @property
+    def reason(self) -> str:
+        """The message without its closing ", skipped.", for lists."""
+        return re.sub(r",? ?skipped\.$", "", self.message).rstrip(". ")
 
 
 Step = Searching | Pause | Notice | Outcome
@@ -842,7 +850,8 @@ def isrcs(files: list[Path], cache: MetadataCache, dry_run: bool) -> Iterator[St
             found_by = f" (album found by searching: {result.release.label})"
 
         if not track.isrcs:
-            yield outcome("skipped", f"MusicBrainz has no ISRC for this recording{found_by}, skipped.")
+            yield outcome("skipped", f"MusicBrainz has no ISRC for this recording{found_by}, skipped.",
+                          kind="no-isrc")
             continue
         if dry_run:
             yield outcome("planned", f"would add {_isrc_list(track.isrcs)}{found_by}.")
@@ -855,6 +864,45 @@ def isrcs(files: list[Path], cache: MetadataCache, dry_run: bool) -> Iterator[St
         finally:
             cache.invalidate(path)
         yield outcome("done", f"added {_isrc_list(written)}{found_by}.")
+
+
+@dataclass
+class ReviewAlbum:
+    """An album folder's tracks of an ISRC run that need a look."""
+
+    folder: Path
+    album: str
+    artist: str
+    items: list[tuple[TrackMeta, Outcome]] = field(default_factory=list)
+
+    @property
+    def reason(self) -> str:
+        """The reason all its tracks share, else ""."""
+        reasons = {outcome.reason for _, outcome in self.items}
+        return reasons.pop() if len(reasons) == 1 else ""
+
+
+def isrc_review(outcomes: list[Outcome], cache: MetadataCache) -> tuple[list[ReviewAlbum], list[ReviewAlbum]]:
+    """What an ISRC run leaves to be done by hand, by album folder: the
+    tracks to check in MusicBrainz Picard (not found, not fitting, failed),
+    and those whose recording MusicBrainz has without an ISRC (nothing to
+    fix in the files; an ISRC could be added on MusicBrainz)."""
+    check: dict[tuple, ReviewAlbum] = {}
+    without: dict[tuple, ReviewAlbum] = {}
+    for outcome in outcomes:
+        if outcome.result == "failed" or (outcome.result == "skipped" and outcome.notable):
+            target = check
+        elif outcome.kind == "no-isrc":
+            target = without
+        else:
+            continue
+        meta = cache.get(outcome.path)
+        key = (outcome.path.parent, meta.album.casefold())
+        if key not in target:
+            target[key] = ReviewAlbum(outcome.path.parent, meta.album, _album_artist(meta))
+        target[key].items.append((meta, outcome))
+    order = lambda albums: sorted(albums.values(), key=lambda a: (str(a.folder).casefold(), a.album.casefold()))
+    return order(check), order(without)
 
 
 def _album_key(meta: TrackMeta) -> tuple:

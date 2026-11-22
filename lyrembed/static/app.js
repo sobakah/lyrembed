@@ -923,7 +923,7 @@ function BulkView({ library, job, onJob, onOpen, notify }) {
     }
   };
 
-  if (job) return html`<${JobView} job=${job} onOpen=${onOpen} onDone=${() => onJob(null)} />`;
+  if (job) return html`<${JobView} job=${job} picard=${library.picard} notify=${notify} onOpen=${onOpen} onDone=${() => onJob(null)} />`;
 
   return html`<div class="stack">
     <div class="stack-tight">
@@ -984,7 +984,66 @@ function BulkView({ library, job, onJob, onOpen, notify }) {
   </div>`;
 }
 
-function JobView({ job, onOpen, onDone }) {
+// What an ISRC run leaves to be done by hand, by album: to tag in MusicBrainz Picard (not
+// found, not fitting, failed), and, folded, the recordings MusicBrainz has without an ISRC.
+function ReviewAlbum({ album, picard, onOpen, notify }) {
+  const [opening, setOpening] = useState(false);
+  const indices = album.tracks.map((t) => t.index).filter((i) => i !== null && i !== undefined);
+  const openInPicard = async () => {
+    setOpening(true);
+    try {
+      const r = await api('/picard', { tracks: indices });
+      notify(`${r.count} track${r.count === 1 ? '' : 's'} sent to MusicBrainz Picard.`, 'info');
+    } catch (err) {
+      notify(err.message, 'error');
+    } finally {
+      setOpening(false);
+    }
+  };
+  return html`<div class="stack-tight review-album">
+    <div class="spread" style=${{ alignItems: 'center' }}>
+      <span><b>${album.album || album.folder || 'No album'}</b>
+        <span class="muted small"> ${album.artist}${album.folder ? html` · <span class="mono">${album.folder}</span>` : ''}</span></span>
+      ${picard && indices.length > 0 && html`<button class="btn btn-small" disabled=${opening} onClick=${openInPicard}>
+        <${Icon} name="tag" /> Open in Picard</button>`}
+    </div>
+    ${album.reason && html`<span class="muted small">${album.reason}</span>`}
+    <details>
+      <summary class="small">${album.tracks.length} track${album.tracks.length === 1 ? '' : 's'}</summary>
+      <div class="stack-tight" style=${{ paddingTop: '6px' }}>
+        ${album.tracks.map((t, i) => html`<span class="small" key=${i}>
+          ${t.index !== null && t.index !== undefined
+            ? html`<button class="btn-link" onClick=${() => onOpen(t.index)}>${t.label}</button>` : t.label}
+          ${!album.reason && html`<span class="muted"> ${t.reason}</span>`}</span>`)}
+      </div>
+    </details>
+  </div>`;
+}
+
+function Review({ review, picard, onOpen, notify }) {
+  const count = (albums) => albums.reduce((n, a) => n + a.tracks.length, 0);
+  const tracks = (albums) => `${count(albums)} track${count(albums) === 1 ? '' : 's'} on ${albums.length} album${albums.length === 1 ? '' : 's'}`;
+  return html`
+    ${review.check.length > 0 && html`<div class="card pad stack">
+      <div class="stack-tight">
+        <h2>To check in MusicBrainz Picard</h2>
+        <span class="muted small">${tracks(review.check)} were not found on MusicBrainz or didn't fit what was found.
+          Tag them in Picard (it writes the album's MusicBrainz ID), then run this again.
+          ${!picard && ' Picard isn\'t installed here: open the folders in it by hand.'}</span>
+      </div>
+      ${review.check.map((album, i) => html`<${ReviewAlbum} key=${i} album=${album} picard=${picard} onOpen=${onOpen} notify=${notify} />`)}
+    </div>`}
+    ${review.without.length > 0 && html`<details class="card">
+      <summary><h2>On MusicBrainz without an ISRC</h2> <span class="muted small">${tracks(review.without)}</span></summary>
+      <div class="pad stack">
+        <span class="muted small">MusicBrainz knows these recordings but has no ISRC for them; Picard can't add one.
+          ISRCs can be added on MusicBrainz itself.</span>
+        ${review.without.map((album, i) => html`<${ReviewAlbum} key=${i} album=${album} picard=${false} onOpen=${onOpen} notify=${notify} />`)}
+      </div>
+    </details>`}`;
+}
+
+function JobView({ job, picard, notify, onOpen, onDone }) {
   const percent = job.total ? Math.round((job.processed / job.total) * 100) : 0;
   const t = job.tally;
   return html`<div class="stack">
@@ -1024,6 +1083,7 @@ function JobView({ job, onOpen, onDone }) {
       </div>`}
       ${job.running && html`<div><button class="btn btn-danger" disabled=${job.stopping} onClick=${() => api('/jobs/current/stop', {})}><${Icon} name="stop" /> Stop</button></div>`}
     </div>
+    ${!job.running && job.review && html`<${Review} review=${job.review} picard=${picard} onOpen=${onOpen} notify=${notify} />`}
   </div>`;
 }
 

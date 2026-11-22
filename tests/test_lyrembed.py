@@ -4352,3 +4352,73 @@ def test_a_disc_where_positions_and_printed_numbers_overlap_goes_by_title():
     assert core._release_track(tracks, meta)[0].number == 1          # printed 6, not position 6
     meta.title = "Song 6"
     assert core._release_track(tracks, meta)[0].number == 6
+
+
+# --- what an ISRC run leaves to be done by hand ----------------------------------------
+def test_the_isrc_review_lists_albums_to_check_and_recordings_without_isrcs(
+        cfg, config_home, tmp_path, musicbrainz, capsys):
+    query = "release:(Lost) AND artist:(Band)"
+    musicbrainz({ALBUM: _release([("One", REC[0], ["USAAA0000001"]), ("Two", REC[1], [])])},
+                found={query: []})
+    (tmp_path / "Tagged").mkdir()
+    (tmp_path / "Loose").mkdir()
+    files = [_album_track(tmp_path / "Tagged", "01.flac", 1, 1, "One", album="Found"),
+             _album_track(tmp_path / "Tagged", "02.flac", 1, 2, "Two", album="Found"),
+             _loose(tmp_path / "Loose", "01.flac", 1, "A", album="Lost"),
+             _loose(tmp_path / "Loose", "02.flac", 2, "B", album="Lost")]
+    cache = tagging.MetadataCache()
+    outcomes = [s for s in core.isrcs(files, cache, dry_run=True) if isinstance(s, core.Outcome)]
+    check, without = core.isrc_review(outcomes, cache)
+    assert [(a.folder.name, a.album, len(a.items)) for a in check] == [("Loose", "Lost", 2)]
+    assert check[0].reason == "no MusicBrainz album ID, and MusicBrainz found no release of 'Lost' by Band"
+    assert [(a.album, [m.title for m, _ in a.items]) for a in without] == [("Found", ["Two"])]
+
+    # The terminal lists them after the run, with the folder to open in Picard.
+    assert batch.run_isrcs(files, cache, dry_run=True) == 0
+    out = capsys.readouterr().out
+    assert "To check in MusicBrainz Picard: 2 tracks on 1 album" in out
+    assert f"Band - Lost (2)  {tmp_path / 'Loose'}" in out
+    assert "On MusicBrainz without an ISRC (it could be added there): 1 track on 1 album" in out
+
+    # The page gets them with the finished run, by track number.
+    session = web.WebSession(tmp_path, files, tagging.MetadataCache())
+    session.start_job("isrc", [0, 1, 2, 3], dry_run=True)
+    view = _wait_for_job(session)
+    view = session.job_view(len(view["rows"]))
+    assert view["review"]["check"] == [{
+        "folder": "Loose", "album": "Lost", "artist": "Band",
+        "reason": "no MusicBrainz album ID, and MusicBrainz found no release of 'Lost' by Band",
+        "tracks": [{"index": 2, "label": "Band - A", "reason": check[0].items[0][1].reason},
+                   {"index": 3, "label": "Band - B", "reason": check[0].items[1][1].reason}]}]
+    assert [t["index"] for t in view["review"]["without"][0]["tracks"]] == [1]
+
+
+def test_tracks_go_to_picard_by_number_only(cfg, tmp_path, monkeypatch):
+    track = _flac_with_tags(tmp_path / "a.flac", title="A", artist="Band")
+    session = web.WebSession(tmp_path, [track], tagging.MetadataCache())
+    started = []
+    monkeypatch.setattr(web.subprocess, "Popen", lambda argv, **kw: started.append(argv))
+
+    monkeypatch.setattr(web, "find_picard", lambda: None)
+    assert session.library()["picard"] is False
+    with pytest.raises(web.ApiError) as missing:
+        session.open_in_picard([0])
+    assert missing.value.status == 404 and not started
+
+    monkeypatch.setattr(web, "find_picard", lambda: ["flatpak", "run", web.PICARD_FLATPAK])
+    assert session.open_in_picard([0, "0"]) == {"ok": True, "count": 1}
+    assert started == [["flatpak", "run", "org.musicbrainz.Picard", str(track)]]
+    for bad in ([], ["../x"], [5]):
+        with pytest.raises(web.ApiError):
+            session.open_in_picard(bad)
+
+
+def test_picard_is_found_as_a_program_or_a_flatpak(tmp_path, monkeypatch, toolbox):
+    monkeypatch.setattr(web.shutil, "which", lambda name: None)
+    assert web.find_picard([tmp_path / "apps"]) is None
+    (tmp_path / "apps" / web.PICARD_FLATPAK).mkdir(parents=True)
+    # From a toolbox, Flatpak is the host's.
+    assert web.find_picard([tmp_path / "apps"]) == ["flatpak-spawn", "--host", "flatpak", "run",
+                                                     "org.musicbrainz.Picard"]
+    monkeypatch.setattr(web.shutil, "which", lambda name: "/usr/bin/picard" if name == "picard" else None)
+    assert web.find_picard([tmp_path / "apps"]) == ["/usr/bin/picard"]

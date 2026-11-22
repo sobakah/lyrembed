@@ -90,10 +90,41 @@ def run_isrcs(files: list[Path], cache: MetadataCache, dry_run: bool) -> int:
     """--auto --isrc: the ISRCs MusicBrainz knows, into tracks that have none."""
     print_banner(f"Adding ISRCs from MusicBrainz ({len(files)} files){' - dry run' if dry_run else ''}")
     tally = core.Tally()
-    _print_steps(core.isrcs(files, cache, dry_run), tally)
+    outcomes: list[core.Outcome] = []
+
+    def kept(steps):
+        for step in steps:
+            if isinstance(step, core.Outcome):
+                outcomes.append(step)
+            yield step
+
+    _print_steps(kept(core.isrcs(files, cache, dry_run)), tally)
+    check, without = core.isrc_review(outcomes, cache)
+    if check:
+        _print_review("To check in MusicBrainz Picard", check)
+    if without:
+        _print_review("On MusicBrainz without an ISRC (it could be added there)", without, brief=True)
 
     print_banner("Summary")
     print(f"  {StyleUI.GREEN}{'Would add' if dry_run else 'Added'}: {tally.done}{StyleUI.RESET}   "
           f"{StyleUI.YELLOW}Skipped: {tally.skipped}{StyleUI.RESET}   "
           f"{StyleUI.RED}Failed: {tally.failed}{StyleUI.RESET}")
     return 1 if tally.failed else 0
+
+
+def _print_review(title: str, albums: list[core.ReviewAlbum], brief: bool = False) -> None:
+    """Albums by folder, with their tracks and why: full paths, to open in
+    Picard. *brief* lists the folders only."""
+    tracks = sum(len(album.items) for album in albums)
+    print_banner(f"{title}: {tracks} track{'' if tracks == 1 else 's'} on {len(albums)} "
+                 f"album{'' if len(albums) == 1 else 's'}")
+    for album in albums:
+        name = " - ".join(x for x in (album.artist, album.album) if x) or album.folder.name
+        print(f"  {StyleUI.BOLD}{name}{StyleUI.RESET} ({len(album.items)})  {StyleUI.GRAY}{album.folder}{StyleUI.RESET}")
+        if brief:
+            continue
+        if album.reason:
+            print(f"    {album.reason}")
+        else:
+            for meta, outcome in album.items:
+                print(f"    {meta.title or meta.path.name}: {outcome.reason}")

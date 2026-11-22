@@ -166,6 +166,24 @@ def find_cdport() -> str | None:
     return found
 
 
+PICARD_FLATPAK = "org.musicbrainz.Picard"
+
+
+def find_picard(flatpak_apps: list[Path] | None = None) -> list[str] | None:
+    """The command that opens files in MusicBrainz Picard: its program on
+    PATH, else its Flatpak (run on the host from a container). Picard 3
+    hands the files to a Picard that is already open."""
+    found = shutil.which("picard")
+    if found:
+        return [found]
+    if flatpak_apps is None:
+        flatpak_apps = [Path.home() / ".local/share/flatpak/app", Path("/var/lib/flatpak/app"),
+                        container.HOST_ROOT / "var/lib/flatpak/app"]
+    if any((folder / PICARD_FLATPAK).is_dir() for folder in flatpak_apps):
+        return container.flatpak_on_host(["flatpak", "run", PICARD_FLATPAK])
+    return None
+
+
 class Import:
     """cdport running for lyrembed's page: started with this page as its
     way back, and read to its end for the album it imported."""
@@ -231,6 +249,8 @@ class Job:
         self.dry_run = dry_run
         self.backup_root = backup_root
         self.rows: list[dict] = []
+        # For the summary at the end (an ISRC run's albums to check).
+        self.outcomes: list[core.Outcome] = []
         self.current = ""
         self.running = True
         self.error = ""
@@ -261,6 +281,7 @@ class Job:
                     self._add({"kind": "notice", "prefix": step.prefix, "message": step.message})
                 elif isinstance(step, core.Outcome):
                     self.tally.add(step)
+                    self.outcomes.append(step)
                     self._add({"kind": "outcome", "prefix": step.prefix, "result": step.result,
                                "message": step.message, "notable": step.notable, "warnings": step.warnings,
                                "index": self._indices.get(step.path)})
@@ -503,6 +524,7 @@ class WebSession:
                 # The quick romanization's starting point: off unless the
                 # setting batch mode follows is on.
                 "cdport": bool(self.cdport()) and not self.return_url,
+                "picard": find_picard() is not None,
                 "importing": bool(self.importing and self.importing.running),
                 "imported": imported,
                 "returnUrl": self.return_url,
@@ -840,7 +862,50 @@ class WebSession:
             return job.view()
 
     def job_view(self, since: int) -> dict | None:
-        return self.job.view(since) if self.job is not None else None
+        if self.job is None:
+            return None
+        view = self.job.view(since)
+        if self.job.action == "isrc" and not self.job.running:
+            check, without = core.isrc_review(list(self.job.outcomes), self.cache)
+            view["review"] = {"check": [self._review_album(a) for a in check],
+                              "without": [self._review_album(a) for a in without]}
+        return view
+
+    def _review_album(self, album: core.ReviewAlbum) -> dict:
+        folder = album.folder
+        if self.base_dir is not None:
+            try:
+                folder = album.folder.relative_to(self.base_dir)
+            except ValueError:
+                pass
+        return {
+            "folder": "" if str(folder) == "." else folder.as_posix(),
+            "album": album.album, "artist": album.artist, "reason": album.reason,
+            "tracks": [{"index": self.job._indices.get(meta.path), "label": meta.label,
+                        "reason": outcome.reason} for meta, outcome in album.items],
+        }
+
+    def open_in_picard(self, indices: list) -> dict:
+        """Hand these tracks to MusicBrainz Picard, to tag by hand what an
+        ISRC run could not place. By track number, so the page can't name
+        other files."""
+        command = find_picard()
+        if command is None:
+            raise ApiError(404, "MusicBrainz Picard isn't installed (neither the picard program nor its Flatpak).")
+        with self.lock:
+            try:
+                chosen = sorted({int(i) for i in indices})
+            except (TypeError, ValueError) as exc:
+                raise ApiError(400, "Tracks must be given by number.") from exc
+            if not chosen:
+                raise ApiError(400, "Choose at least one track.")
+            files = [str(self._meta(i).path) for i in chosen]
+        try:
+            subprocess.Popen([*command, *files], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+        except OSError as exc:
+            raise ApiError(500, f"MusicBrainz Picard could not be started: {exc}") from exc
+        return {"ok": True, "count": len(files)}
 
     def stop_job(self) -> dict | None:
         if self.job is not None and self.job.running:
@@ -1242,6 +1307,8 @@ class _Handler(BaseHTTPRequestHandler):
                 str(body.get("action", "")), body.get("tracks") or [], overwrite=bool(body.get("overwrite")),
                 dry_run=bool(body.get("dryRun")), romanize=None if romanize is None else bool(romanize),
                 delete_sidecars=bool(body.get("deleteSidecars")))}
+        if method == "POST" and path == "/api/picard":
+            return session.open_in_picard(body.get("tracks") or [])
         if method == "POST" and path == "/api/jobs/current/stop":
             return {"job": session.stop_job()}
         if method == "GET" and path == "/api/settings":

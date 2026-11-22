@@ -125,3 +125,6 @@ main.with-player { padding-bottom: 96px; }
 
 /* In the page from the start: once it shows, the server that has the icon is gone. */
 .overlay[hidden] { display: none; }
+
+/* An ISRC run's albums to check by hand, one under the other. */
+.review-album + .review-album { border-top: 1px solid var(--border); padding-top: 12px; }
