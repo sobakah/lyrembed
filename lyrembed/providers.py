@@ -1299,39 +1299,53 @@ _MB_ID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 ISRC_RE = re.compile(r"^[A-Z]{2}[A-Z0-9]{3}[0-9]{7}$")
 
 
-# After a 503 ("too many requests", or its search servers busy): wait this
-# long, or as long as Retry-After says, and ask again; then give up.
-_MB_BUSY_WAITS = (3.0, 10.0)
-_MB_LONGEST_WAIT = 30.0
+class MusicBrainzBusy(requests.HTTPError):
+    """MusicBrainz refused with 503: too many requests from this address
+    (Picard asking at the same time counts too), or its servers are busy.
+    *wait* is its Retry-After, 0 without one. A RequestException, so callers
+    that only report failures need nothing new; ISRC runs wait it out with
+    Pause steps (core._patiently)."""
+
+    def __init__(self, reason: str, wait: float = 0.0) -> None:
+        super().__init__(f"MusicBrainz refused (503): {reason}" if reason else "MusicBrainz refused (503)")
+        self.reason, self.wait = reason, wait
 
 
 def _musicbrainz_base() -> str:
     return str(config.get("api", "musicbrainz_url", "https://musicbrainz.org/ws/2")).rstrip("/")
 
 
+def _busy_reason(response) -> str:
+    """MusicBrainz's own words in a 503 (rate limit or not), shortened."""
+    try:
+        payload = response.json()
+        reason = str(payload.get("error") or "") if isinstance(payload, dict) else ""
+    except (ValueError, AttributeError):
+        reason = re.sub(r"<[^>]+>|\s+", " ", getattr(response, "text", "") or "").strip()
+    return reason[:200]
+
+
 def _musicbrainz_get(path: str, params: dict) -> requests.Response:
     """One request to the MusicBrainz API, at most one a second across every
-    caller in this process. A 503 is waited out and asked again, holding the
-    lock, so nothing else asks meanwhile."""
+    caller in this process. Raises MusicBrainzBusy for a 503: the waiting is
+    the caller's, where Stop can end it."""
     global _MB_LAST_CALL
     url = f"{_musicbrainz_base()}/{path}"
     with _MB_LOCK:
-        for busy_wait in (*_MB_BUSY_WAITS, None):
-            wait = _MB_LAST_CALL + _MB_INTERVAL - time.monotonic()
-            if wait > 0:
-                time.sleep(wait)
-            try:
-                response = get_session().get(url, params=params, timeout=_timeout())
-            finally:
-                _MB_LAST_CALL = time.monotonic()
-            if response.status_code != 503 or busy_wait is None:
-                return response
-            try:
-                asked = float(response.headers.get("Retry-After", 0))
-            except (TypeError, ValueError):
-                asked = 0.0
-            time.sleep(min(max(busy_wait, asked), _MB_LONGEST_WAIT))
-    raise AssertionError("unreachable")
+        wait = _MB_LAST_CALL + _MB_INTERVAL - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        try:
+            response = get_session().get(url, params=params, timeout=_timeout())
+        finally:
+            _MB_LAST_CALL = time.monotonic()
+    if response.status_code == 503:
+        try:
+            asked = float((getattr(response, "headers", None) or {}).get("Retry-After", 0))
+        except (TypeError, ValueError):
+            asked = 0.0
+        raise MusicBrainzBusy(_busy_reason(response), asked)
+    return response
 
 
 def is_musicbrainz_id(value: str) -> bool:

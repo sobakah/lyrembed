@@ -3944,6 +3944,7 @@ class _FakeMusicBrainz:
     def __init__(self, releases, status=200, found=None, statuses=()):
         self.releases, self.status, self.requests = releases, status, []
         self.found, self.statuses = found or {}, list(statuses)
+        self.busy_headers = {}
 
     def get(self, url, params=None, timeout=None, headers=None):
         self.requests.append((url, params))
@@ -3955,7 +3956,7 @@ class _FakeMusicBrainz:
 
         class Response:
             status_code = status
-            headers = {}
+            headers = fake.busy_headers if status == 503 else {}
 
             def raise_for_status(self):
                 if self.status_code >= 400:
@@ -3963,6 +3964,8 @@ class _FakeMusicBrainz:
                     raise requests.HTTPError(f"{self.status_code} Service Unavailable")
 
             def json(self):
+                if self.status_code == 503:
+                    return {"error": "Your requests are exceeding the allowable rate limit."}
                 if searching:
                     return {"releases": fake.found.get(params["query"], [])}
                 return fake.releases[last]
@@ -3989,7 +3992,6 @@ def musicbrainz(monkeypatch):
         fake = _FakeMusicBrainz(releases, status, found, statuses)
         monkeypatch.setattr(providers, "get_session", lambda: fake)
         monkeypatch.setattr(providers, "_MB_INTERVAL", 0.0)
-        monkeypatch.setattr(providers, "_MB_BUSY_WAITS", (0.0, 0.0))
         return fake
     return install
 
@@ -4153,11 +4155,14 @@ def test_an_album_id_with_its_key_in_the_value_is_still_read(cfg, tmp_path, musi
 def test_a_failed_album_lookup_fails_its_tracks_with_one_request(cfg, tmp_path, musicbrainz):
     fake = musicbrainz({ALBUM: _release([("One", REC[0], ["USAAA0000001"]), ("Two", REC[1], [])])}, status=503)
     files = [_album_track(tmp_path, "01.flac", 1, 1, "One"), _album_track(tmp_path, "02.flac", 1, 2, "Two")]
-    outcomes = [s for s in core.isrcs(files, tagging.MetadataCache(), dry_run=False)
-                if isinstance(s, core.Outcome)]
+    steps = list(core.isrcs(files, tagging.MetadataCache(), dry_run=False))
+    outcomes = [s for s in steps if isinstance(s, core.Outcome)]
     assert [o.result for o in outcomes] == ["failed", "failed"]
-    # One album: asked once, and twice again after the 503 (waited out in between).
-    assert "MusicBrainz lookup failed" in outcomes[1].message and len(fake.requests) == 3
+    assert "exceeding the allowable rate limit; still refusing after waiting 4 min" in outcomes[1].message
+    # One album: asked once, and again after each pause, longer each time.
+    pauses = [s for s in steps if isinstance(s, core.Pause)]
+    assert [p.seconds for p in pauses] == [10.0, 30.0, 60.0, 120.0]
+    assert all(p.limited == ["MusicBrainz"] for p in pauses) and len(fake.requests) == 5
 
 
 def test_isrcs_from_the_page_and_in_batch_mode(cfg, config_home, tmp_path, musicbrainz, capsys):
@@ -4267,13 +4272,23 @@ def test_a_release_group_id_in_the_album_tag_is_searched_within(cfg, tmp_path, m
     assert outcomes[0].result == "planned" and "USAAA0000001" in outcomes[0].message
 
 
-def test_musicbrainz_refusals_are_waited_out(cfg, musicbrainz, monkeypatch):
-    fake = musicbrainz({ALBUM: _release([("One", REC[0], ["USAAA0000001"])])}, statuses=[503, 503])
-    assert providers.musicbrainz_release(ALBUM)[0].isrcs == ["USAAA0000001"]
-    assert len(fake.requests) == 3
-    fake.statuses = [503, 503, 503]
-    with pytest.raises(Exception, match="503"):
-        providers.musicbrainz_release(ALBUM)
+def test_musicbrainz_refusals_are_waited_out(cfg, tmp_path, musicbrainz, monkeypatch):
+    """Picard asking at the same time is enough for MusicBrainz to refuse:
+    the run pauses (Stop can end it) and asks again, instead of giving up."""
+    fake = musicbrainz({ALBUM: _release([("One", REC[0], ["USAAA0000001"])])}, statuses=[503])
+    with pytest.raises(providers.MusicBrainzBusy, match="allowable rate limit"):
+        providers.musicbrainz_release(ALBUM)          # the provider itself does not wait
+
+    fake.statuses, fake.busy_headers = [503, 503], {"Retry-After": "45"}
+    track = _album_track(tmp_path, "01.flac", 1, 1, "One")
+    steps = list(core.isrcs([track], tagging.MetadataCache(), dry_run=True))
+    pauses = [s for s in steps if isinstance(s, core.Pause)]
+    assert [p.seconds for p in pauses] == [45.0, 45.0]      # Retry-After, when longer
+    assert [s.result for s in steps if isinstance(s, core.Outcome)] == ["planned"]
+    # Each pause is followed by the request again, as a step of its own.
+    kinds = [type(s).__name__ for s in steps]
+    assert kinds == ["Searching", "Pause", "Searching", "Pause", "Searching", "Outcome"]
+
     # Quick automatic retries would count against its limit: none for 503.
     monkeypatch.setattr(providers, "_SESSION", None)
     monkeypatch.setattr(providers, "get_session", REAL_GET_SESSION)

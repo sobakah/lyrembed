@@ -242,10 +242,12 @@ hard to spot.
   lengths only while more than half of the album fits by title (`core._fits_release`; a
   game soundtrack's track is Russian on MusicBrainz); at most `_SEARCH_LOOKUPS` releases are fetched
   per album. The Notice names the release and its address: the dry run is how it is checked.
-- **MusicBrainz 503s are waited out** in `providers._musicbrainz_get` (`_MB_BUSY_WAITS`,
-  `Retry-After`), and its address has its own adapter on the session without 503 in the retry
-  list: urllib3's quick retries counted against its limit and the first search run failed with
-  503s for most albums.
+- **MusicBrainz 503s are waited out by the run**, not the provider: `_musicbrainz_get` raises
+  `MusicBrainzBusy` (a RequestException, with MusicBrainz's reason and Retry-After), and
+  `core._patiently` yields `Pause` steps (`_MB_BUSY_PAUSES`, about 4 min in all) so Stop ends
+  them. Its limit is per address, so Picard working at the same time is enough (it was); 15 s
+  of waiting was not. Its address has its own adapter on the session without 503 in the retry
+  list: urllib3's quick retries counted against the limit.
 
 **Program structure**
 

@@ -639,6 +639,26 @@ def _release_track(tracks: list[providers.ReleaseTrack], meta: TrackMeta
     return None, f"MusicBrainz's album has no track {disc}-{meta.track_number}"
 
 
+# MusicBrainz refusing (503): waits before asking again, longer each time,
+# then the request fails. Picard asking at the same time is enough for it.
+_MB_BUSY_PAUSES = (10.0, 30.0, 60.0, 120.0)
+
+
+def _patiently(prefix: str, ask):
+    """ask() (a MusicBrainz request), with a refusal waited out as Pause
+    steps the caller can stop; returns its result (use with yield from)."""
+    for pause in (*_MB_BUSY_PAUSES, None):
+        try:
+            return ask()
+        except providers.MusicBrainzBusy as exc:
+            if pause is None:
+                raise providers.MusicBrainzBusy(
+                    f"{exc.reason.rstrip('. ') or 'no reason given'}; still refusing after waiting "
+                    f"{sum(_MB_BUSY_PAUSES) / 60:.0f} min") from exc
+            yield Pause(prefix, max(pause, exc.wait), ["MusicBrainz"])
+            yield Searching(prefix, "asking MusicBrainz again")
+
+
 # A search for an album without a usable ID: how many of the best-scoring
 # releases are fetched to compare with the files, and how far a track's
 # length may be from the file's.
@@ -727,10 +747,13 @@ def isrcs(files: list[Path], cache: MetadataCache, dry_run: bool) -> Iterator[St
         if not meta.error and not meta.isrc:
             albums.setdefault(_album_key(meta), []).append(meta)
 
-    def release_tracks(release_id: str) -> list[providers.ReleaseTrack] | None | str:
+    def release_tracks(prefix: str, release_id: str):
+        """The release's tracks, None or the error (use with yield from)."""
         if release_id not in releases:
+            yield Searching(prefix, "asking MusicBrainz")
             try:
-                releases[release_id] = providers.musicbrainz_release(release_id)
+                releases[release_id] = yield from _patiently(
+                    prefix, lambda: providers.musicbrainz_release(release_id))
             except (requests.RequestException, ValueError) as exc:
                 releases[release_id] = f"MusicBrainz lookup failed: {exc}"
         return releases[release_id]
@@ -748,15 +771,14 @@ def isrcs(files: list[Path], cache: MetadataCache, dry_run: bool) -> Iterator[St
             return
         yield Searching(prefix, "searching MusicBrainz")
         try:
-            found = providers.musicbrainz_search_releases(meta.album, _album_artist(meta), release_group)
+            found = yield from _patiently(prefix, lambda: providers.musicbrainz_search_releases(
+                meta.album, _album_artist(meta), release_group))
         except (requests.RequestException, ValueError) as exc:
             result.reason, result.failed = f"MusicBrainz search failed: {exc}", True
             return
         candidates = [r for r in found if r.track_count >= len(group)][:_SEARCH_LOOKUPS]
         for candidate in candidates:
-            if candidate.id not in releases:
-                yield Searching(prefix, "asking MusicBrainz")
-            tracks = release_tracks(candidate.id)
+            tracks = yield from release_tracks(prefix, candidate.id)
             if isinstance(tracks, str):
                 result.reason, result.failed = tracks, True
                 return
@@ -793,9 +815,7 @@ def isrcs(files: list[Path], cache: MetadataCache, dry_run: bool) -> Iterator[St
         elif not providers.is_musicbrainz_id(album):
             why_search = f"the MusicBrainz album ID '{meta.album_id}' is no valid ID"
         else:
-            if album not in releases:
-                yield Searching(prefix, "asking MusicBrainz")
-            release = release_tracks(album)
+            release = yield from release_tracks(prefix, album)
             if isinstance(release, str):
                 yield outcome("failed", release)
                 continue
