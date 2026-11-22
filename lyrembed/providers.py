@@ -1341,7 +1341,10 @@ def is_musicbrainz_id(value: str) -> bool:
 @dataclass
 class ReleaseTrack:
     """A track of a MusicBrainz release, numbered as Picard tags it: disc =
-    the medium's position, number = the track's position on it."""
+    the medium's position, number = the track's position on it. printed is
+    the number on the release when it is a plain one, and differs where the
+    numbering goes on across discs (disc 2 starting at 6: cyanrip numbers
+    so)."""
 
     disc: int
     number: int
@@ -1349,6 +1352,10 @@ class ReleaseTrack:
     recording_id: str
     isrcs: list[str]
     length_ms: int = 0
+    printed: int = 0
+
+    def numbered(self, number: int) -> bool:
+        return number in (self.number, self.printed)
 
 
 def musicbrainz_release(release_id: str) -> list[ReleaseTrack] | None:
@@ -1384,6 +1391,7 @@ def musicbrainz_release(release_id: str) -> list[ReleaseTrack] | None:
                 recording_id=str(recording.get("id") or ""),
                 isrcs=[code for code in dict.fromkeys(isrcs) if ISRC_RE.match(code)],
                 length_ms=length if isinstance(length, int) and length > 0 else 0,
+                printed=int(track["number"]) if str(track.get("number") or "").isdigit() else 0,
             ))
     return tracks
 

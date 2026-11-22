@@ -227,6 +227,8 @@ hard to spot.
   refuses; the iTunes `xid ` atom (`label:isrc:CODE`) and `TXXX:ISRC` count as one.
 - **A wrong ISRC is worse than none** (it sends a song to the wrong file): the recording ID
   decides, disc and track number only when `text.matches_title` agrees (`core._release_track`).
+  A track number is the position on the disc (Picard's) or the number printed on the release
+  (`ReleaseTrack.printed`, going on across discs: cyanrip's rips number disc 2 from 6).
 - One `release/<MUSICBRAINZ_ALBUMID>?inc=recordings+isrcs` per album and run, not cached across
   runs; MusicBrainz's one request a second is shared with the instrumental check
   (`providers._musicbrainz_get`). The ID is checked as a UUID before it goes into the address.

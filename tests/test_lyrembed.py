@@ -3969,12 +3969,15 @@ class _FakeMusicBrainz:
         return Response()
 
 
-def _release(*media):
+def _release(*media, printed_goes_on=False):
     """A release's JSON: each medium a list of (title, recording id, isrcs)
-    or (title, recording id, isrcs, length in ms)."""
+    or (title, recording id, isrcs, length in ms). *printed_goes_on*: the
+    printed numbers go on across discs (disc 2 starts at 6), positions don't."""
+    before = [sum(len(m) for m in media[:i]) if printed_goes_on else 0 for i in range(len(media))]
     return {"id": ALBUM, "media": [
         {"position": disc, "tracks": [
-            {"position": n, "number": str(n), "title": track[0], "length": (track[3:] or [None])[0],
+            {"position": n, "number": str(before[disc - 1] + n), "title": track[0],
+             "length": (track[3:] or [None])[0],
              "recording": {"id": track[1], "title": track[0], "isrcs": track[2]}}
             for n, track in enumerate(tracks, 1)]}
         for disc, tracks in enumerate(media, 1)]}
@@ -4304,3 +4307,33 @@ def test_a_translated_title_counts_on_its_number_and_length_when_most_titles_fit
     meta = tagging.read_metadata(numberless)
     tracks = providers.musicbrainz_release(OTHER[0])
     assert core._searched_track(tracks, meta) is None
+
+
+def test_tracks_numbered_on_across_discs_are_found(cfg, tmp_path, musicbrainz):
+    """An album of two CDs of five tracks: MusicBrainz prints 6-10 on
+    the second, and the rip numbered them so (Picard numbers 1-5)."""
+    from mutagen.flac import FLAC
+
+    musicbrainz({ALBUM: _release([("One", REC[0], ["USAAA0000001"]), ("Two", REC[1], ["USAAA0000002"])],
+                                 [("Three", REC[2], ["USAAA0000003"]), ("Four", REC[3], ["USAAA0000004"])],
+                                 printed_goes_on=True)})
+    goes_on = _album_track(tmp_path, "03.flac", 2, 3, "Three")      # disc 2, track 3 as printed
+    per_disc = _album_track(tmp_path, "04.flac", 2, 2, "Four")      # disc 2, track 2 as Picard numbers
+    outcomes = [s for s in core.isrcs([goes_on, per_disc], tagging.MetadataCache(), dry_run=False)
+                if isinstance(s, core.Outcome)]
+    assert [o.result for o in outcomes] == ["done", "done"]
+    assert FLAC(goes_on)["ISRC"] == ["USAAA0000003"] and FLAC(per_disc)["ISRC"] == ["USAAA0000004"]
+    # The number is no licence for a title that doesn't fit.
+    wrong = _album_track(tmp_path, "05.flac", 2, 3, "Something Else")
+    outcomes = [s for s in core.isrcs([wrong], tagging.MetadataCache(), dry_run=True)
+                if isinstance(s, core.Outcome)]
+    assert outcomes[0].notable and "track 2-3 is 'Three'" in outcomes[0].message
+
+
+def test_a_disc_where_positions_and_printed_numbers_overlap_goes_by_title():
+    tracks = [providers.ReleaseTrack(2, n, f"Song {n}", "", [f"USAAA000000{n}"], printed=n + 5)
+              for n in range(1, 8)]
+    meta = tagging.TrackMeta(path=Path("x.flac"), title="Song 1", disc_number=2, track_number=6)
+    assert core._release_track(tracks, meta)[0].number == 1          # printed 6, not position 6
+    meta.title = "Song 6"
+    assert core._release_track(tracks, meta)[0].number == 6

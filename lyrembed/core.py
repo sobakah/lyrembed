@@ -627,12 +627,15 @@ def _release_track(tracks: list[providers.ReleaseTrack], meta: TrackMeta
         return None, "no disc number, and the album has several discs"
     if not meta.track_number:
         return None, "no track number"
-    for track in tracks:
-        if (track.disc, track.number) == (disc, meta.track_number):
-            if text.matches_title(meta.title, track.title):
-                return track, ""
-            return None, (f"MusicBrainz's track {disc}-{meta.track_number} is '{track.title}', "
-                          "which does not fit this title")
+    # By its position on the disc (as Picard numbers) or the number printed
+    # on the release (going on across discs); the title decides between them.
+    numbered = [t for t in tracks if t.disc == disc and t.numbered(meta.track_number)]
+    for track in numbered:
+        if text.matches_title(meta.title, track.title):
+            return track, ""
+    if numbered:
+        return None, (f"MusicBrainz's track {disc}-{meta.track_number} is '{numbered[0].title}', "
+                      "which does not fit this title")
     return None, f"MusicBrainz's album has no track {disc}-{meta.track_number}"
 
 
@@ -657,7 +660,7 @@ def _searched_track(tracks: list[providers.ReleaseTrack], meta: TrackMeta
     discs = {track.disc for track in tracks}
     fitting = []
     for track in tracks:
-        if meta.track_number and track.number != meta.track_number:
+        if meta.track_number and not track.numbered(meta.track_number):
             continue
         if meta.disc_number and len(discs) > 1 and track.disc != meta.disc_number:
             continue
