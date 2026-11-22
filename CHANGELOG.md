@@ -4,7 +4,7 @@ All notable changes to lyrembed are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and versions follow
 [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.0] — 2026-11-22
 
 ### Added
 
@@ -92,6 +92,8 @@ reach; `--auto` tags a whole folder in the terminal without asking.
 - **Installing**: `pipx install "lyrembed[all] @ git+https://github.com/sobakah/lyrembed.git"`;
   Python 3.10 or newer, ffmpeg optional for Apple Lossless.
 
-[Unreleased]: https://github.com/sobakah/lyrembed/compare/1.0.1...HEAD
+[Unreleased]: https://github.com/sobakah/lyrembed/compare/1.1.0...HEAD
+[1.1.0]: https://github.com/sobakah/lyrembed/compare/1.0.2...1.1.0
+[1.0.2]: https://github.com/sobakah/lyrembed/compare/1.0.1...1.0.2
 [1.0.1]: https://github.com/sobakah/lyrembed/compare/1.0.0...1.0.1
 [1.0.0]: https://github.com/sobakah/lyrembed/releases/tag/1.0.0
