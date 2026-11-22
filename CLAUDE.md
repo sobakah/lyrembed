@@ -412,5 +412,18 @@ steps in the shared block above.
 
 ## Open items
 
+- **ISRCs into existing files** (the owner's idea, 2026-11-22; not designed yet): lyrembed
+  already writes tags into existing files and asks MusicBrainz, so a step that adds missing
+  ISRCs fits here: by the file's `MUSICBRAINZ_ALBUMID`, the release's recordings and their
+  ISRCs, a dry run first, then written. cdport is to do the same for new rips.
+  Why: Jewelcase and Jewelcase Mobile match Spotify playlist songs to library files by ISRC
+  first, and most of the owner's files have none (fewer than one in ten in 2026;
+  cyanrip writes an ISRC only when the CD has it). Jewelcase already looks them up for its own
+  database (its CONCEPT.md §9.5, *As built*: one MusicBrainz request per album,
+  `release/<id>?inc=recordings+isrcs`, matched by disc and track number), but never writes music
+  files, so they stay there. Tags to write (Picard's names, which lofty reads as the ISRC in
+  Jewelcase and Jewelcase Mobile): FLAC/Vorbis `ISRC`, ID3 `TSRC`, MP4
+  `----:com.apple.iTunes:ISRC`. Never replace an ISRC a file already has (nor the iTunes
+  `xid ` atom); keep MusicBrainz's one request a second.
 - D-Bus activation by dbus-broker itself (service file installed, nothing started by hand) is not
   known to have been checked; a private dbus-daemon and a hand-started `--dbus` were.
